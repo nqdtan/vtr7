@@ -18,6 +18,7 @@
 #include "ReadOptions.h"
 #include "vpr_utils.h"
 #include "place_macro.h"
+#include "omp.h"
 
 /************** Types and defines local to place.c ***************************/
 
@@ -581,6 +582,12 @@ void try_place(struct s_placer_opts placer_opts,
 			inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
 		}
 
+    omp_set_num_threads(2);
+    #pragma omp parallel
+    {
+      int tid = omp_get_thread_num();
+      printf("[TAN] thread: %d\n", tid);
+    }
 
     // TAN: this is where it matters ...
 		inner_crit_iter_count = 1;
