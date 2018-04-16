@@ -207,14 +207,12 @@ static const float cross_count[50] = { /* [0..49] */1.0, 1.0, 1.0, 1.0828, 1.153
 #endif
 
 static void alloc_and_load_placement_structs(
-		float place_cost_exp, float ***old_region_occ_x,
-		float ***old_region_occ_y, struct s_placer_opts placer_opts,
+		float place_cost_exp, struct s_placer_opts placer_opts,
 		t_direct_inf *directs, int num_directs);
 
 static void alloc_and_load_try_swap_structs();
 
 static void free_placement_structs(
-		float **old_region_occ_x, float **old_region_occ_y,
 		struct s_placer_opts placer_opts);
 
 static void alloc_and_load_for_fast_cost_update(float place_cost_exp);
@@ -244,8 +242,7 @@ static int setup_blocks_affected(int b_from, int x_to, int y_to, int z_to);
 static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to);
 
 static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *timing_cost,
-		float rlim, float **old_region_occ_x,
-		float **old_region_occ_y,
+		float rlim,
 		enum e_place_algorithm place_algorithm, float timing_tradeoff,
 		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
 		float *delay_cost);
@@ -255,8 +252,7 @@ static void check_place(float bb_cost, float timing_cost,
 		float delay_cost);
 
 static float starting_t(float *cost_ptr, float *bb_cost_ptr,
-		float *timing_cost_ptr, float **old_region_occ_x,
-		float **old_region_occ_y,
+		float *timing_cost_ptr,
 		struct s_annealing_sched annealing_sched, int max_moves, float rlim,
 		enum e_place_algorithm place_algorithm, float timing_tradeoff,
 		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
@@ -313,6 +309,7 @@ void try_place(struct s_placer_opts placer_opts,
 		struct s_det_routing_arch det_routing_arch, t_segment_inf * segment_inf,
 		t_timing_inf timing_inf, t_direct_inf *directs, int num_directs) {
 
+  printf("[TAN] start placing ...\n");
 	/* Does almost all the work of placing a circuit.  Width_fac gives the   *
 	 * width of the widest channel.  Place_cost_exp says what exponent the   *
 	 * width should be taken to when calculating costs.  This allows a       *
@@ -323,7 +320,7 @@ void try_place(struct s_placer_opts placer_opts,
 		inner_recompute_limit, swap_result;
 	float t, success_rat, rlim, cost, timing_cost, bb_cost, new_bb_cost, new_timing_cost,
 		delay_cost, new_delay_cost, place_delay_value, inverse_prev_bb_cost, inverse_prev_timing_cost,
-		oldt, **old_region_occ_x, **old_region_occ_y, **net_delay = NULL, crit_exponent,
+		oldt, **net_delay = NULL, crit_exponent,
 		first_rlim, final_rlim, inverse_delta_rlim, critical_path_delay = UNDEFINED,
 		**remember_net_delay_original_ptr; /*used to free net_delay if it is re-assigned */
 	double av_cost, av_bb_cost, av_timing_cost, av_delay_cost, sum_of_squares, std_dev;
@@ -400,7 +397,7 @@ void try_place(struct s_placer_opts placer_opts,
 
 	alloc_and_load_placement_structs(
 			placer_opts.place_cost_exp,
-			&old_region_occ_x, &old_region_occ_y, placer_opts,
+      placer_opts,
 			directs, num_directs);
 
 	initial_placement(placer_opts.pad_loc_type, placer_opts.pad_loc_file);
@@ -413,6 +410,7 @@ void try_place(struct s_placer_opts placer_opts,
 
 	if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
 			|| placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
+    printf("[TAN] timing-driven placement ...\n");
 		bb_cost = comp_bb_cost(NORMAL);
 
 		crit_exponent = placer_opts.td_place_exp_first; /*this will be modified when rlim starts to change */
@@ -478,9 +476,11 @@ void try_place(struct s_placer_opts placer_opts,
 		inverse_prev_timing_cost = 0; /*inverses not used */
 		inverse_prev_bb_cost = 0;
 	}
+  printf("[TAN] annealing_sched.inner_num %f, num_blocks %d\n",
+    annealing_sched.inner_num, num_blocks);
 
 	move_lim = (int) (annealing_sched.inner_num * pow(num_blocks, 1.3333));
-
+  move_lim = move_lim;
 	if (placer_opts.inner_loop_recompute_divider != 0)
 		inner_recompute_limit = (int) (0.5
 				+ (float) move_lim
@@ -498,13 +498,14 @@ void try_place(struct s_placer_opts placer_opts,
 		move_lim = 1;
 
 	rlim = (float) std::max(nx + 1, ny + 1);
+  printf("[TAN] move_lim %d, nx=%d, ny=%d, num_nets=%d\n",
+    move_lim, nx, ny, num_nets);
 
 	first_rlim = rlim; /*used in timing-driven placement for exponent computation */
 	final_rlim = 1;
 	inverse_delta_rlim = 1 / (first_rlim - final_rlim);
 
 	t = starting_t(&cost, &bb_cost, &timing_cost,
-			old_region_occ_x, old_region_occ_y,
 			annealing_sched, move_lim, rlim,
 			placer_opts.place_algorithm, placer_opts.timing_tradeoff,
 			inverse_prev_bb_cost, inverse_prev_timing_cost, &delay_cost);
@@ -531,6 +532,8 @@ void try_place(struct s_placer_opts placer_opts,
 		cost, bb_cost, timing_cost, delay_cost, width_fac);
 	update_screen(MAJOR, msg, PLACEMENT, FALSE);
 
+  // TAN: Here, we can have multiple threads doing swaps in different
+  // regions. They will all be terminated when we reach a final T value
 	while (exit_crit(t, cost, annealing_sched) == 0) {
 
 		if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -545,6 +548,7 @@ void try_place(struct s_placer_opts placer_opts,
 		sum_of_squares = 0.;
 		success_sum = 0;
 
+    // TAN: this is timing analysis
 		if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
 				|| placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
 
@@ -577,12 +581,11 @@ void try_place(struct s_placer_opts placer_opts,
 			inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
 		}
 
-		inner_crit_iter_count = 1;
 
+    // TAN: this is where it matters ...
+		inner_crit_iter_count = 1;
 		for (inner_iter = 0; inner_iter < move_lim; inner_iter++) {
 			swap_result = try_swap(t, &cost, &bb_cost, &timing_cost, rlim,
-					old_region_occ_x,
-					old_region_occ_y, 
 					placer_opts.place_algorithm, placer_opts.timing_tradeoff,
 					inverse_prev_bb_cost, inverse_prev_timing_cost, &delay_cost);
 			if (swap_result == ACCEPTED) {
@@ -711,6 +714,7 @@ void try_place(struct s_placer_opts placer_opts,
 		sprintf(msg, "Cost: %g  BB Cost %g  TD Cost %g  Temperature: %g",
 				cost, bb_cost, timing_cost, t);
 		update_screen(MINOR, msg, PLACEMENT, FALSE);
+    printf("[TAN] rlim=%f\n", rlim);
 		update_rlim(&rlim, success_rat);
 
 		if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -769,7 +773,6 @@ void try_place(struct s_placer_opts placer_opts,
 
 	for (inner_iter = 0; inner_iter < move_lim; inner_iter++) {
 		swap_result = try_swap(t, &cost, &bb_cost, &timing_cost, rlim,
-				old_region_occ_x, old_region_occ_y,
 				placer_opts.place_algorithm, placer_opts.timing_tradeoff,
 				inverse_prev_bb_cost, inverse_prev_timing_cost, &delay_cost);
 		
@@ -914,7 +917,6 @@ void try_place(struct s_placer_opts placer_opts,
 #endif
 
 	free_placement_structs(
-				old_region_occ_x, old_region_occ_y,
 				placer_opts);
 	if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
 			|| placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE
@@ -1034,7 +1036,6 @@ static int exit_crit(float t, float cost,
 	}
 
 	/* Automatic annealing schedule */
-
 	if (t < 0.005 * cost / num_nets) {
 		return (1);
 	} else {
@@ -1043,8 +1044,7 @@ static int exit_crit(float t, float cost,
 }
 
 static float starting_t(float *cost_ptr, float *bb_cost_ptr,
-		float *timing_cost_ptr, float **old_region_occ_x,
-		float **old_region_occ_y, 
+		float *timing_cost_ptr,
 		struct s_annealing_sched annealing_sched, int max_moves, float rlim,
 		enum e_place_algorithm place_algorithm, float timing_tradeoff,
 		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
@@ -1068,7 +1068,6 @@ static float starting_t(float *cost_ptr, float *bb_cost_ptr,
 
 	for (i = 0; i < move_lim; i++) {
 		swap_result = try_swap(HUGE_POSITIVE_FLOAT, cost_ptr, bb_cost_ptr, timing_cost_ptr, rlim,
-				old_region_occ_x, old_region_occ_y,
 				place_algorithm, timing_tradeoff,
 				inverse_prev_bb_cost, inverse_prev_timing_cost, delay_cost_ptr);
 		
@@ -1195,15 +1194,13 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 	 * Returns abort_swap. */
 
 	int imacro, imember;
-	int x_swap_offset, y_swap_offset, z_swap_offset, x_from, y_from, z_from, b_to;
-	int curr_b_from, curr_x_from, curr_y_from, curr_z_from, curr_b_to, curr_x_to, curr_y_to, curr_z_to;
+	int x_swap_offset, y_swap_offset, z_swap_offset, x_from, y_from, z_from;
+	int curr_b_from, curr_x_from, curr_y_from, curr_z_from, curr_x_to, curr_y_to, curr_z_to;
 	int abort_swap = FALSE;
 	
 	x_from = block[b_from].x;
 	y_from = block[b_from].y;
 	z_from = block[b_from].z;
-
-	b_to = grid[x_to][y_to].blocks[z_to];
 
 	get_imacro_from_iblk(&imacro, b_from, pl_macros, num_pl_macros);
 	if ( imacro != -1) {
@@ -1232,7 +1229,6 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 			if (curr_x_to < 1 || curr_x_to > nx || curr_y_to < 1 || curr_y_to > ny || curr_z_to < 0) {
 				abort_swap = TRUE;
 			} else {
-				curr_b_to = grid[curr_x_to][curr_y_to].blocks[curr_z_to];
 				abort_swap = setup_blocks_affected(curr_b_from, curr_x_to, curr_y_to, curr_z_to);
 			}
 
@@ -1250,8 +1246,7 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 }
 
 static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *timing_cost,
-		float rlim, float **old_region_occ_x,
-		float **old_region_occ_y, 
+		float rlim,
 		enum e_place_algorithm place_algorithm, float timing_tradeoff,
 		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
 		float *delay_cost) {
@@ -1313,8 +1308,7 @@ static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *ti
 	 * to be moved - check for carry chains and other placement    *
 	 * macros.                                                     */
 	
-	/* Check whether the from_block is part of a macro first.      *
-	 * If it is, the whole macro has to be moved. Calculate the    *
+	/* Check whether the from_block is part of a macro first.      f it is, the whole macro has to be moved. Calculate the    *
 	 * x, y, z offsets of the swap to maintain relative placements *
 	 * of the blocks. Abort the swap if the to_block is part of a  *
 	 * macro (not supported yet).                                  */
@@ -1911,7 +1905,6 @@ static float comp_bb_cost(enum cost_methods method) {
 }
 
 static void free_placement_structs(
-		float **old_region_occ_x, float **old_region_occ_y,
 		struct s_placer_opts placer_opts) {
 
 	/* Frees the major structures needed by the placer (and not needed       *
@@ -1973,8 +1966,7 @@ static void free_placement_structs(
 }
 
 static void alloc_and_load_placement_structs(
-		float place_cost_exp, float ***old_region_occ_x,
-		float ***old_region_occ_y, struct s_placer_opts placer_opts,
+		float place_cost_exp, struct s_placer_opts placer_opts,
 		t_direct_inf *directs, int num_directs) {
 
 	/* Allocates the major structures needed only by the placer, primarily for *
@@ -2049,10 +2041,6 @@ static void alloc_and_load_placement_structs(
 	bb_coords = (struct s_bb *) my_malloc(num_nets * sizeof(struct s_bb));
 	bb_num_on_edges = (struct s_bb *) my_malloc(num_nets * sizeof(struct s_bb));
 
-	/* Shouldn't use them; crash hard if I do!   */
-	*old_region_occ_x = NULL;
-	*old_region_occ_y = NULL;
-	
 	alloc_and_load_for_fast_cost_update(place_cost_exp);
 		
 	net_pin_index = alloc_and_load_net_pin_index();
