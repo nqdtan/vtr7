@@ -533,61 +533,70 @@ void try_place(struct s_placer_opts placer_opts,
 		cost, bb_cost, timing_cost, delay_cost, width_fac);
 	update_screen(MAJOR, msg, PLACEMENT, FALSE);
 
-  // TAN: Here, we can have multiple threads doing swaps in different
-  // regions. They will all be terminated when we reach a final T value
-	while (exit_crit(t, cost, annealing_sched) == 0) {
+  // TAN: we set the number of threads before entering the loop.
+  // TODO: would it be a good idea to change the number of threads
+  // during loop execution?
+  omp_set_num_threads(2);
 
-		if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
-				|| placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
-			cost = 1;
-		}
-
-		av_cost = 0.;
-		av_bb_cost = 0.;
-		av_delay_cost = 0.;
-		av_timing_cost = 0.;
-		sum_of_squares = 0.;
-		success_sum = 0;
-
-    // TAN: this is timing analysis
-		if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
-				|| placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
-
-			if (outer_crit_iter_count >= placer_opts.recompute_crit_iter
-					|| placer_opts.inner_loop_recompute_divider != 0) {
-#ifdef VERBOSE
-				vpr_printf(TIO_MESSAGE_INFO, "Outer loop recompute criticalities\n");
-#endif
-				place_delay_value = delay_cost / num_connections;
-
-				if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE)
-					load_constant_net_delay(net_delay, place_delay_value,
-							clb_net, num_nets);
-				/*note, for path_based, the net delay is not updated since it is current,
-				 *because it accesses point_to_point_delay array */
-
-				load_timing_graph_net_delays(net_delay);
-				do_timing_analysis(slacks, FALSE, FALSE, FALSE);
-				load_criticalities(slacks, crit_exponent);
-				/*recompute costs from scratch, based on new criticalities */
-				comp_td_costs(&timing_cost, &delay_cost);
-				outer_crit_iter_count = 0;
-			}
-			outer_crit_iter_count++;
-
-			/*at each temperature change we update these values to be used     */
-			/*for normalizing the tradeoff between timing and wirelength (bb)  */
-			inverse_prev_bb_cost = 1 / bb_cost;
-			/*Prevent inverse timing cost from going to infinity */
-			inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
-		}
-
-    omp_set_num_threads(2);
+  // TAN: the hard part is to identify which variables need to be privatized
+  // to each thread ... VPR uses a lot of global variables, so it is not
+  // apparent at a first hand
+ 	while (exit_crit(t, cost, annealing_sched) == 0) {
+    // TAN: the loop body should be executed by multiple threads.
+    // They will synchronize at the end before the next iteration
     #pragma omp parallel
     {
-      int tid = omp_get_thread_num();
-      printf("[TAN] thread: %d\n", tid);
+    int tid = omp_get_thread_num();
+
+    // TAN: let thread 0 does timing analysis. Would it be correct?
+    if (tid == 0) {
+		  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
+				  || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
+			  cost = 1;
+		  }
+
+      // TAN: average costs should be the global information for all threads
+		  av_cost = 0.;
+		  av_bb_cost = 0.;
+		  av_delay_cost = 0.;
+		  av_timing_cost = 0.;
+		  sum_of_squares = 0.;
+		  success_sum = 0;
+
+      // TAN: this is timing analysis
+		  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
+				  || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
+
+			  if (outer_crit_iter_count >= placer_opts.recompute_crit_iter
+					  || placer_opts.inner_loop_recompute_divider != 0) {
+#ifdef VERBOSE
+				  vpr_printf(TIO_MESSAGE_INFO, "Outer loop recompute criticalities\n");
+#endif
+				  place_delay_value = delay_cost / num_connections;
+
+				  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE)
+					  load_constant_net_delay(net_delay, place_delay_value,
+							  clb_net, num_nets);
+				  /*note, for path_based, the net delay is not updated since it is current,
+				   *because it accesses point_to_point_delay array */
+
+				  load_timing_graph_net_delays(net_delay);
+				  do_timing_analysis(slacks, FALSE, FALSE, FALSE);
+				  load_criticalities(slacks, crit_exponent);
+				  /*recompute costs from scratch, based on new criticalities */
+				  comp_td_costs(&timing_cost, &delay_cost);
+				  outer_crit_iter_count = 0;
+			  }
+			  outer_crit_iter_count++;
+
+			  /*at each temperature change we update these values to be used     */
+			  /*for normalizing the tradeoff between timing and wirelength (bb)  */
+			  inverse_prev_bb_cost = 1 / bb_cost;
+			  /*Prevent inverse timing cost from going to infinity */
+			  inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
+		  }
     }
+    #pragma omp barrier
 
     // TAN: this is where it matters ...
 		inner_crit_iter_count = 1;
@@ -736,6 +745,8 @@ void try_place(struct s_placer_opts placer_opts,
 			print_clb_placement("first_iteration_clb_placement.echo");
 		}
 #endif
+
+    } // end of omp parallel region
 	}
 
 	t = 0; /* freeze out */
@@ -1217,7 +1228,7 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 		x_swap_offset = x_to - x_from;
 		y_swap_offset = y_to - y_from;
 		z_swap_offset = z_to - z_from;
-		
+		printf("[TAN} found macro\n");
 		for (imember = 0; imember < pl_macros[imacro].num_blocks && abort_swap == FALSE; imember++) {
 
 			// Gets the new from and to info for every block in the macro
