@@ -239,8 +239,12 @@ static void initial_placement(enum e_pad_loc_type pad_loc_type,
 static float comp_bb_cost(enum cost_methods method);
 
 static int setup_blocks_affected(int b_from, int x_to, int y_to, int z_to);
+static int setup_blocks_affected1(int b_from, int x_to, int y_to, int z_to,
+                                t_pl_blocks_to_be_moved *local_blocks_affected);
 
 static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to);
+static int find_affected_blocks1(int b_from, int x_to, int y_to, int z_to,
+                                t_pl_blocks_to_be_moved *local_blocks_affected);
 
 static enum swap_result try_swap1(float t, float *cost, float *bb_cost, float *timing_cost,
 		float rlim,
@@ -1261,6 +1265,89 @@ static float starting_t(float *cost_ptr, float *bb_cost_ptr,
 	return (20. * std_dev);
 }
 
+static int setup_blocks_affected1(int b_from, int x_to, int y_to, int z_to,
+                                t_pl_blocks_to_be_moved *local_blocks_affected) {
+
+	/* Find all the blocks affected when b_from is swapped with b_to. 
+	 * Returns abort_swap.                  */
+
+	int imoved_blk, imacro;
+	int x_from, y_from, z_from, b_to;
+	int abort_swap = FALSE;
+
+	x_from = block[b_from].x;
+	y_from = block[b_from].y;
+	z_from = block[b_from].z;
+
+	b_to = grid[x_to][y_to].blocks[z_to];
+
+	// Check whether the to_location is empty
+	if (b_to == EMPTY) {
+
+		// Swap the block, dont swap the nets yet
+		block[b_from].x = x_to;
+		block[b_from].y = y_to;
+		block[b_from].z = z_to;
+
+		// Sets up the blocks moved
+		imoved_blk = local_blocks_affected->num_moved_blocks;
+		local_blocks_affected->moved_blocks[imoved_blk].block_num = b_from;
+		local_blocks_affected->moved_blocks[imoved_blk].xold = x_from;
+		local_blocks_affected->moved_blocks[imoved_blk].xnew = x_to;
+		local_blocks_affected->moved_blocks[imoved_blk].yold = y_from;
+		local_blocks_affected->moved_blocks[imoved_blk].ynew = y_to;
+		local_blocks_affected->moved_blocks[imoved_blk].zold = z_from;
+		local_blocks_affected->moved_blocks[imoved_blk].znew = z_to;
+		local_blocks_affected->moved_blocks[imoved_blk].swapped_to_empty = TRUE;
+		local_blocks_affected->num_moved_blocks ++;
+				
+	} else {
+
+		// Does not allow a swap with a macro yet
+		get_imacro_from_iblk(&imacro, b_to, pl_macros, num_pl_macros);
+		if (imacro != -1) {
+			abort_swap = TRUE;
+			return (abort_swap);
+		}
+
+		// Swap the block, dont swap the nets yet
+		block[b_to].x = x_from;
+		block[b_to].y = y_from;
+		block[b_to].z = z_from;
+
+		block[b_from].x = x_to;
+		block[b_from].y = y_to;
+		block[b_from].z = z_to;
+		
+		// Sets up the blocks moved
+		imoved_blk = local_blocks_affected->num_moved_blocks;
+		local_blocks_affected->moved_blocks[imoved_blk].block_num = b_from;
+		local_blocks_affected->moved_blocks[imoved_blk].xold = x_from;
+		local_blocks_affected->moved_blocks[imoved_blk].xnew = x_to;
+		local_blocks_affected->moved_blocks[imoved_blk].yold = y_from;
+		local_blocks_affected->moved_blocks[imoved_blk].ynew = y_to;
+		local_blocks_affected->moved_blocks[imoved_blk].zold = z_from;
+		local_blocks_affected->moved_blocks[imoved_blk].znew = z_to;
+		local_blocks_affected->moved_blocks[imoved_blk].swapped_to_empty = FALSE;
+		local_blocks_affected->num_moved_blocks ++;
+				
+		imoved_blk = local_blocks_affected->num_moved_blocks;
+		local_blocks_affected->moved_blocks[imoved_blk].block_num = b_to;
+		local_blocks_affected->moved_blocks[imoved_blk].xold = x_to;
+		local_blocks_affected->moved_blocks[imoved_blk].xnew = x_from;
+		local_blocks_affected->moved_blocks[imoved_blk].yold = y_to;
+		local_blocks_affected->moved_blocks[imoved_blk].ynew = y_from;
+		local_blocks_affected->moved_blocks[imoved_blk].zold = z_to;
+		local_blocks_affected->moved_blocks[imoved_blk].znew = z_from;
+		local_blocks_affected->moved_blocks[imoved_blk].swapped_to_empty = FALSE;
+		local_blocks_affected->num_moved_blocks ++;
+
+	} // Finish swapping the blocks and setting up local_blocks_affected
+			
+	return (abort_swap);
+
+}
+
 
 static int setup_blocks_affected(int b_from, int x_to, int y_to, int z_to) {
 
@@ -1340,6 +1427,64 @@ static int setup_blocks_affected(int b_from, int x_to, int y_to, int z_to) {
 
 	} // Finish swapping the blocks and setting up blocks_affected
 			
+	return (abort_swap);
+
+}
+static int find_affected_blocks1(int b_from, int x_to, int y_to, int z_to,
+                                t_pl_blocks_to_be_moved *local_blocks_affected) {
+
+	/* Finds and set ups the affected_blocks array. 
+	 * Returns abort_swap. */
+
+	int imacro, imember;
+	int x_swap_offset, y_swap_offset, z_swap_offset, x_from, y_from, z_from;
+	int curr_b_from, curr_x_from, curr_y_from, curr_z_from, curr_x_to, curr_y_to, curr_z_to;
+	int abort_swap = FALSE;
+	
+	x_from = block[b_from].x;
+	y_from = block[b_from].y;
+	z_from = block[b_from].z;
+
+	get_imacro_from_iblk(&imacro, b_from, pl_macros, num_pl_macros);
+	if ( imacro != -1) {
+		// b_from is part of a macro, I need to swap the whole macro
+		
+		// Record down the relative position of the swap
+		x_swap_offset = x_to - x_from;
+		y_swap_offset = y_to - y_from;
+		z_swap_offset = z_to - z_from;
+		printf("[TAN} found macro\n");
+		for (imember = 0; imember < pl_macros[imacro].num_blocks && abort_swap == FALSE; imember++) {
+
+			// Gets the new from and to info for every block in the macro
+			// cannot use the old from and to info
+			curr_b_from = pl_macros[imacro].members[imember].blk_index;
+			
+			curr_x_from = block[curr_b_from].x;
+			curr_y_from = block[curr_b_from].y;
+			curr_z_from = block[curr_b_from].z;
+
+			curr_x_to = curr_x_from + x_swap_offset;
+			curr_y_to = curr_y_from + y_swap_offset;
+			curr_z_to = curr_z_from + z_swap_offset;
+			
+			// Make sure that the swap_to location is still on the chip
+			if (curr_x_to < 1 || curr_x_to > nx || curr_y_to < 1 || curr_y_to > ny || curr_z_to < 0) {
+				abort_swap = TRUE;
+			} else {
+				abort_swap = setup_blocks_affected1(curr_b_from, curr_x_to, curr_y_to, curr_z_to,
+                                            local_blocks_affected);
+			}
+
+		} // Finish going through all the blocks in the macro
+
+	} else { 
+		
+		// This is not a macro - I could use the from and to info from before
+		abort_swap = setup_blocks_affected1(b_from, x_to, y_to, z_to, local_blocks_affected);
+
+	} // Finish handling cases for blocks in macro and otherwise
+
 	return (abort_swap);
 
 }
@@ -1424,6 +1569,9 @@ static enum swap_result try_swap1(float t,
 	int inet, iblk, bnum, iblk_pin, inet_affected;
 	int abort_swap = FALSE;
 
+  // TAN: this needs to be made local as well
+  t_pl_blocks_to_be_moved local_blocks_affected;
+
 	num_ts_called ++;
 
 	/* I'm using negative values of temp_net_cost as a flag, so DO NOT   *
@@ -1483,7 +1631,8 @@ static enum swap_result try_swap1(float t,
 	 * of the blocks. Abort the swap if the to_block is part of a  *
 	 * macro (not supported yet).                                  */
 	
-	abort_swap = find_affected_blocks(b_from, x_to, y_to, z_to);
+	//abort_swap = find_affected_blocks(b_from, x_to, y_to, z_to);
+  abort_swap = find_affected_blocks1(b_from, x_to, y_to, z_to, &local_blocks_affected);
 
 	if (abort_swap == FALSE) {
 
@@ -1520,7 +1669,8 @@ static enum swap_result try_swap1(float t,
 				}
 			}
 		}
-			
+    printf("tid=%d blocks_affected_num_moved_blocks=%d\n",
+      tid, blocks_affected.num_moved_blocks);
 		/* Now update the cost function. The cost is only updated once for every net  *
 		 * May have to do major optimizations here later.                             */
 		for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
@@ -1529,9 +1679,6 @@ static enum swap_result try_swap1(float t,
 			temp_net_cost[inet] = get_net_cost(inet, &ts_bb_coord_new[inet]);
 			bb_delta_c += temp_net_cost[inet] - net_cost[inet];
 		}
-
-    //printf("[bb_cost] tid=%d, bb_delta_c=%f, bb_cost=%f",
-    //  tid, bb_delta_c, *bb_cost);
 
 		if (place_algorithm == NET_TIMING_DRIVEN_PLACE
 				|| place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
@@ -1566,6 +1713,9 @@ static enum swap_result try_swap1(float t,
         // are updated properly when running with multiple threads
 				update_td_cost();
 			}
+
+      printf("[cost] tid=%d, bb_cost=%f, timing_cost=%f, delay_cost=%f",
+        tid, *bb_cost, *timing_cost, *delay_cost);
 
 			/* update net cost functions and reset flags. */
 			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
