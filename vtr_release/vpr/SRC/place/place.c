@@ -1642,9 +1642,9 @@ static enum swap_result try_swap1(float t,
 		/* Go through all the pins in all the blocks moved and update the bounding boxes.  *
 		 * Do not update the net cost here since it should only be updated once per net,   *
 		 * not once per pin                                                                */
-		for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++)
+		for (iblk = 0; iblk < local_blocks_affected.num_moved_blocks; iblk++)
 		{
-			bnum = blocks_affected.moved_blocks[iblk].block_num;
+			bnum = local_blocks_affected.moved_blocks[iblk].block_num;
 
 			/* Go through all the pins in the moved block */
 			for (iblk_pin = 0; iblk_pin < block[bnum].type->num_pins; iblk_pin++)
@@ -1662,15 +1662,15 @@ static enum swap_result try_swap1(float t,
 				} else {
 					update_bb(inet, &ts_bb_coord_new[inet],
 							&ts_bb_edge_new[inet], 
-							blocks_affected.moved_blocks[iblk].xold, 
-							blocks_affected.moved_blocks[iblk].yold + block[bnum].type->pin_height[iblk_pin],
-							blocks_affected.moved_blocks[iblk].xnew, 
-							blocks_affected.moved_blocks[iblk].ynew + block[bnum].type->pin_height[iblk_pin]);
+							local_blocks_affected.moved_blocks[iblk].xold, 
+							local_blocks_affected.moved_blocks[iblk].yold + block[bnum].type->pin_height[iblk_pin],
+							local_blocks_affected.moved_blocks[iblk].xnew, 
+							local_blocks_affected.moved_blocks[iblk].ynew + block[bnum].type->pin_height[iblk_pin]);
 				}
 			}
 		}
-    printf("tid=%d blocks_affected_num_moved_blocks=%d\n",
-      tid, blocks_affected.num_moved_blocks);
+    printf("tid=%d local_blocks_affected_num_moved_blocks=%d\n",
+      tid, local_blocks_affected.num_moved_blocks);
 		/* Now update the cost function. The cost is only updated once for every net  *
 		 * May have to do major optimizations here later.                             */
 		for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
@@ -1734,21 +1734,21 @@ static enum swap_result try_swap1(float t,
 
 			/* Update clb data structures since we kept the move. */
 			/* Swap physical location */
-			for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++) {
+			for (iblk = 0; iblk < local_blocks_affected.num_moved_blocks; iblk++) {
 
-				x_to = blocks_affected.moved_blocks[iblk].xnew;
-				y_to = blocks_affected.moved_blocks[iblk].ynew;
-				z_to = blocks_affected.moved_blocks[iblk].znew;
+				x_to = local_blocks_affected.moved_blocks[iblk].xnew;
+				y_to = local_blocks_affected.moved_blocks[iblk].ynew;
+				z_to = local_blocks_affected.moved_blocks[iblk].znew;
 
-				x_from = blocks_affected.moved_blocks[iblk].xold;
-				y_from = blocks_affected.moved_blocks[iblk].yold;
-				z_from = blocks_affected.moved_blocks[iblk].zold;
+				x_from = local_blocks_affected.moved_blocks[iblk].xold;
+				y_from = local_blocks_affected.moved_blocks[iblk].yold;
+				z_from = local_blocks_affected.moved_blocks[iblk].zold;
 
-				b_from = blocks_affected.moved_blocks[iblk].block_num;
+				b_from = local_blocks_affected.moved_blocks[iblk].block_num;
 
 				grid[x_to][y_to].blocks[z_to] = b_from;
 
-				if (blocks_affected.moved_blocks[iblk].swapped_to_empty == TRUE) {
+				if (local_blocks_affected.moved_blocks[iblk].swapped_to_empty == TRUE) {
 					grid[x_to][y_to].usage++;
 					grid[x_from][y_from].usage--;
 					grid[x_from][y_from].blocks[z_from] = -1;
@@ -1766,17 +1766,17 @@ static enum swap_result try_swap1(float t,
 			}
 
 			/* Restore the block data structures to their state before the move. */
-			for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++) {
-				b_from = blocks_affected.moved_blocks[iblk].block_num;
+			for (iblk = 0; iblk < local_blocks_affected.num_moved_blocks; iblk++) {
+				b_from = local_blocks_affected.moved_blocks[iblk].block_num;
 
-				block[b_from].x = blocks_affected.moved_blocks[iblk].xold;
-				block[b_from].y = blocks_affected.moved_blocks[iblk].yold;
-				block[b_from].z = blocks_affected.moved_blocks[iblk].zold;
+				block[b_from].x = local_blocks_affected.moved_blocks[iblk].xold;
+				block[b_from].y = local_blocks_affected.moved_blocks[iblk].yold;
+				block[b_from].z = local_blocks_affected.moved_blocks[iblk].zold;
 			}
 		}
 
 		/* Resets the num_moved_blocks, but do not free blocks_moved array. Defensive Coding */
-		blocks_affected.num_moved_blocks = 0;
+		local_blocks_affected.num_moved_blocks = 0;
 
 		check_place(*bb_cost, *timing_cost, place_algorithm, *delay_cost);
 
@@ -1784,16 +1784,16 @@ static enum swap_result try_swap1(float t,
 	} else {
 
 		/* Restore the block data structures to their state before the move. */
-		for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++) {
-			b_from = blocks_affected.moved_blocks[iblk].block_num;
+		for (iblk = 0; iblk < local_blocks_affected.num_moved_blocks; iblk++) {
+			b_from = local_blocks_affected.moved_blocks[iblk].block_num;
 
-			block[b_from].x = blocks_affected.moved_blocks[iblk].xold;
-			block[b_from].y = blocks_affected.moved_blocks[iblk].yold;
-			block[b_from].z = blocks_affected.moved_blocks[iblk].zold;
+			block[b_from].x = local_blocks_affected.moved_blocks[iblk].xold;
+			block[b_from].y = local_blocks_affected.moved_blocks[iblk].yold;
+			block[b_from].z = local_blocks_affected.moved_blocks[iblk].zold;
 		}
 
 		/* Resets the num_moved_blocks, but do not free blocks_moved array. Defensive Coding */
-		blocks_affected.num_moved_blocks = 0;
+		local_blocks_affected.num_moved_blocks = 0;
 		
 		return ABORTED;
 	}
