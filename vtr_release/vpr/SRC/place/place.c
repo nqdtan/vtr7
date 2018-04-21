@@ -580,33 +580,38 @@ void try_place(struct s_placer_opts placer_opts,
   // TAN: the hard part is to identify which variables need to be privatized
   // to each thread ... VPR uses a lot of global variables, so it is not
   // apparent at a first hand
+  #pragma omp parallel
+  {
+  int tid = omp_get_thread_num();
+
+  int x, y, z;
+  int s_idx;
+  int num_threads = omp_get_num_threads();
+  // TAN: for now, each thread has 2 subregions
+  int num_subregions = 2; 
+  int segment_x = (nx + 1 + num_threads - 1) / num_threads;
+  //int segment_y = (ny + 1 + num_threads - 1) / num_threads;
+  int subsegment_x = (segment_x + num_subregions - 1) / num_subregions;
+  //int subsegment_y = (segment_y + num_subregions - 1) / num_subregions;
+  int lb_y = 0;
+  int ub_y = ny + 1;
+  t_pl_blocks_to_be_moved local_blocks_affected;
+
+	local_blocks_affected.moved_blocks = (t_pl_moved_block*)my_calloc(
+      num_blocks, sizeof(t_pl_moved_block));
+  local_blocks_affected.num_moved_blocks = 0;
+
  	while (exit_crit(t, cost, annealing_sched) == 0) {
-    // TAN: the loop body should be executed by multiple threads.
-    // They will synchronize at the end before the next iteration
-    #pragma omp parallel
-    {
-    int tid = omp_get_thread_num();
+
     float local_cost = cost;
     float local_bb_cost = bb_cost;
     float local_delay_cost =  delay_cost;
     float local_timing_cost = timing_cost;
 
-    int x, y, z;
-    int s_idx;
-    int num_threads = omp_get_num_threads();
-    // TAN: for now, each thread has 2 subregions
-    int num_subregions = 2; 
-    int segment_x = (nx + 1 + num_threads - 1) / num_threads;
-    //int segment_y = (ny + 1 + num_threads - 1) / num_threads;
-    int subsegment_x = (segment_x + num_subregions - 1) / num_subregions;
-    //int subsegment_y = (segment_y + num_subregions - 1) / num_subregions;
-    int lb_y = 0;
-    int ub_y = ny + 1;
-    t_pl_blocks_to_be_moved local_blocks_affected;
-
-	  local_blocks_affected.moved_blocks = (t_pl_moved_block*)my_calloc(
-      num_blocks, sizeof(t_pl_moved_block));
-    local_blocks_affected.num_moved_blocks = 0;
+    float old_cost = cost;
+    float old_bb_cost = bb_cost;
+    float old_delay_cost = delay_cost;
+    float old_timing_cost = timing_cost;
 
     // TAN: let thread 0 does timing analysis. Would it be correct?
     if (tid == 0) {
@@ -651,27 +656,29 @@ void try_place(struct s_placer_opts placer_opts,
 
 			  /*at each temperature change we update these values to be used     */
 			  /*for normalizing the tradeoff between timing and wirelength (bb)  */
-			  inverse_prev_bb_cost = 1 / bb_cost;
+			  inverse_prev_bb_cost = 1 / local_bb_cost;
 			  /*Prevent inverse timing cost from going to infinity */
 			  inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
 		  }
     }
     #pragma omp barrier
 
+    int local_success_sum = 0;
+    double local_av_cost = 0.;
+    double local_av_bb_cost = 0.;
+    double local_av_timing_cost = 0.;
+    double local_av_delay_cost = 0.;
+    double local_sum_of_squares = 0.;
+    int local_num_swap_accepted = 0;
+    int local_num_swap_aborted = 0;
+    int local_num_swap_rejected = 0;
+    int local_num_ts_called = 0;
+
     // TAN: this is where it matters ...
     for (s_idx = 0; s_idx < num_subregions; s_idx++) {
       int lb_x = tid * segment_x + s_idx * subsegment_x;
       int ub_x = tid * segment_x + subsegment_x + s_idx * subsegment_x;
 
-      int local_success_sum = 0;
-      double local_av_cost = 0.;
-      double local_av_bb_cost = 0.;
-      double local_av_timing_cost = 0.;
-      double local_av_delay_cost = 0.;
-      double local_sum_of_squares = 0.;
-      int local_num_swap_accepted = 0;
-      int local_num_swap_aborted = 0;
-      int local_num_swap_rejected = 0;
 
       // TAN: expand the subregions to ensure the blocks can migrate to
       // different subregions
@@ -695,6 +702,7 @@ void try_place(struct s_placer_opts placer_opts,
             if (block[block_num].isFixed == TRUE)
               continue;
 
+            local_num_ts_called++;
 			      swap_result = try_swap1(t,
               &local_cost, &local_bb_cost, &local_timing_cost,
               rlim,
@@ -722,122 +730,81 @@ void try_place(struct s_placer_opts placer_opts,
         }
       }
 
-      // TAN: here we update global variables, so must use atomic operations
-      #pragma omp critical
-      {
-      success_sum += local_success_sum;
-      av_cost += local_av_cost;
-      av_bb_cost += local_av_bb_cost;
-      av_timing_cost += local_av_timing_cost;
-      av_delay_cost += local_av_delay_cost;
-      sum_of_squares += local_sum_of_squares;
-      num_swap_accepted += local_num_swap_accepted;
-      num_swap_aborted += local_num_swap_aborted;
-      num_swap_rejected += local_num_swap_rejected;
-      }
+      // TODO: perform timing analysis here as in the original code
 
+      // TAN: sync before moving to the next iteration to ensure no swap conflict
+      #pragma omp barrier
     }
 
-//		int local_inner_crit_iter_count = 1;
-//		for (inner_iter = 0; inner_iter < move_lim; inner_iter++) {
-//			swap_result = try_swap(t, &cost, &bb_cost, &timing_cost, rlim,
-//					placer_opts.place_algorithm, placer_opts.timing_tradeoff,
-//					inverse_prev_bb_cost, inverse_prev_timing_cost, &delay_cost);
-//
-//      // TAN: threads updating global variables. Need to specify
-//      // criical section here
-//      #pragma omp critical
-//      {
-//			if (swap_result == ACCEPTED) {
-//
-//				/* Move was accepted.  Update statistics that are useful for the annealing schedule. */
-//				success_sum++;
-//				av_cost += cost;
-//				av_bb_cost += bb_cost;
-//				av_timing_cost += timing_cost;
-//				av_delay_cost += delay_cost;
-//				sum_of_squares += cost * cost;
-//				num_swap_accepted++;
-//			} else if (swap_result == ABORTED) {
-//				num_swap_aborted++;
-//			} else { // swap_result == REJECTED
-//				num_swap_rejected++;
-//			}
-//      }
-
-      // TAN: for now, just ignore this
-//			if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
-//					|| placer_opts.place_algorithm
-//							== PATH_TIMING_DRIVEN_PLACE) {
-//
-//				/* Do we want to re-timing analyze the circuit to get updated slack and criticality values? 
-//				 * We do this only once in a while, since it is expensive.
-//				 */
-//				if (local_inner_crit_iter_count >= inner_recompute_limit
-//						&& inner_iter != move_lim - 1) { /*on last iteration don't recompute */
-//
-//					local_inner_crit_iter_count = 0;
-//#ifdef VERBOSE
-//					vpr_printf(TIO_MESSAGE_TRACE, "Inner loop recompute criticalities\n");
-//#endif
-//					if (placer_opts.place_algorithm
-//							== NET_TIMING_DRIVEN_PLACE) {
-//					    /* Use a constant delay per connection as the delay estimate, rather than
-//						 * estimating based on the current placement.  Not a great idea, but not the 
-//						 * default.
-//						 */
-//						place_delay_value = delay_cost / num_connections;
-//						load_constant_net_delay(net_delay, place_delay_value,
-//								clb_net, num_nets);
-//					}
-//
-//					/* Using the delays in net_delay, do a timing analysis to update slacks and
-//					 * criticalities; then update the timing cost since it will change.
-//					 */
-//					load_timing_graph_net_delays(net_delay);
-//					do_timing_analysis(slacks, FALSE, FALSE, FALSE);
-//					load_criticalities(slacks, crit_exponent);
-//					comp_td_costs(&timing_cost, &delay_cost);
-//				}
-//				local_inner_crit_iter_count++;
-//			}
-//#ifdef VERBOSE
-//			vpr_printf(TIO_MESSAGE_TRACE, "t = %g  cost = %g   bb_cost = %g timing_cost = %g move = %d dmax = %g\n",
-//					t, cost, bb_cost, timing_cost, inner_iter, delay_cost);
-//			if (fabs(bb_cost - comp_bb_cost(CHECK)) > bb_cost * ERROR_TOL)
-//				exit(1);
-//#endif
-//		}
+    // TAN: here we update global variables, so must use atomic operations
+    #pragma omp critical
+    {
+    num_ts_called += local_num_ts_called;
+    success_sum += local_success_sum;
+    av_cost += local_av_cost;
+    av_bb_cost += local_av_bb_cost;
+    av_timing_cost += local_av_timing_cost;
+    av_delay_cost += local_av_delay_cost;
+    sum_of_squares += local_sum_of_squares;
+    num_swap_accepted += local_num_swap_accepted;
+    num_swap_aborted += local_num_swap_aborted;
+    num_swap_rejected += local_num_swap_rejected;
+    }
 
 		/* Lines below prevent too much round-off error from accumulating *
 		 * in the cost over many iterations.  This round-off can lead to  *
 		 * error checks failing because the cost is different from what   *
 		 * you get when you recompute from scratch.                       */
 
+    printf("[LOCAL COST %d] local_cost=%g, local_bb_cost=%g, local_timing_cost=%g, local_delay_cost=%g\n",
+      tid, local_cost, local_bb_cost, local_timing_cost, local_delay_cost);
+
+    #pragma omp critical
+    {
+    cost += local_cost;
+    bb_cost += local_bb_cost;
+    timing_cost += local_timing_cost;
+    delay_cost += local_delay_cost;
+    moves_since_cost_recompute += local_num_ts_called;
+    }
+
     #pragma omp barrier
 
-    // TAN: dedicate one thread to run the following code
-    // It will also update the temperature and rlim
     if (tid == 0) {
-		moves_since_cost_recompute += move_lim;
+    cost -= old_cost * num_threads;
+    bb_cost -= old_bb_cost * num_threads;
+    timing_cost -= old_timing_cost * num_threads;
+    delay_cost -= old_delay_cost * num_threads;
+
+    printf("moves: %d, cost=%g, old_cost=%g, bb_cost=%g, old_bb_cost=%g, timing_cost=%g, old_timing_cost=%g, delay_cost=%g, old_delay_cost=%g\n",
+      moves_since_cost_recompute, cost, old_cost, bb_cost, old_bb_cost,
+      timing_cost, old_timing_cost, delay_cost, old_delay_cost);
+
+		//moves_since_cost_recompute += move_lim;
 		if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
+      printf("Recompute ...\n");
 			new_bb_cost = recompute_bb_cost();
+
 			if (fabs(new_bb_cost - bb_cost) > bb_cost * ERROR_TOL) {
 				vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_bb_cost = %g, old bb_cost = %g\n", 
 						new_bb_cost, bb_cost);
-				exit(1);
+        // TAN: hmmmm ...
+				//exit(1);
 			}
 			bb_cost = new_bb_cost;
 
 			if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
 					|| placer_opts.place_algorithm
 							== PATH_TIMING_DRIVEN_PLACE) {
+
 				comp_td_costs(&new_timing_cost, &new_delay_cost);
+
 				if (fabs(new_timing_cost - timing_cost) > timing_cost * ERROR_TOL) {
 					vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_timing_cost = %g, old timing_cost = %g\n",
 							new_timing_cost, timing_cost);
 					exit(1);
 				}
+
 				if (fabs(new_delay_cost - delay_cost) > delay_cost * ERROR_TOL) {
 					vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_delay_cost = %g, old delay_cost = %g\n",
 							new_delay_cost, delay_cost);
@@ -877,10 +844,9 @@ void try_place(struct s_placer_opts placer_opts,
 				critical_path_delay, success_rat, std_dev, rlim, crit_exponent, tot_iter, t / oldt);
 #endif
 
-		sprintf(msg, "Cost: %g  BB Cost %g  TD Cost %g  Temperature: %g",
-				cost, bb_cost, timing_cost, t);
+		//sprintf(msg, "Cost: %g  BB Cost %g  TD Cost %g  Temperature: %g",
+		//		cost, bb_cost, timing_cost, t);
 		update_screen(MINOR, msg, PLACEMENT, FALSE);
-    printf("[TAN] rlim=%f\n", rlim);
 		update_rlim(&rlim, success_rat);
 
 		if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -897,14 +863,14 @@ void try_place(struct s_placer_opts placer_opts,
 #endif
     }
 
-		free(local_blocks_affected.moved_blocks);
-
     // TAN: sync before we move to the next annealing iteration.
     // Very conservative
     #pragma omp barrier
-
-    } // end of omp parallel region
 	}
+
+  free(local_blocks_affected.moved_blocks);
+  } // end of omp parallel region
+
 
 	t = 0; /* freeze out */
 	av_cost = 0.;
@@ -1591,7 +1557,7 @@ static enum swap_result try_swap1(float t,
 	//		num_blocks, sizeof(t_pl_moved_block));
 	//local_blocks_affected.num_moved_blocks = 0;
 
-	num_ts_called ++;
+	//num_ts_called ++;
 
 	/* I'm using negative values of temp_net_cost as a flag, so DO NOT   *
 	 * use cost functions that can go negative.                          */
@@ -1633,9 +1599,9 @@ static enum swap_result try_swap1(float t,
 		z_to = my_irand(grid[x_to][y_to].type->capacity - 1);
 	}
 
-  int tid = omp_get_thread_num();
-  printf("tid=%d, x_from=%d, y_from=%d, z_from=%d, b_from=%d -- x_to=%d, y_to=%d, z_to=%d\n",
-    tid, x_from, y_from, z_from, b_from, x_to, y_to, z_to);
+  //int tid = omp_get_thread_num();
+  //printf("tid=%d, x_from=%d, y_from=%d, z_from=%d, b_from=%d -- x_to=%d, y_to=%d, z_to=%d\n",
+  //  tid, x_from, y_from, z_from, b_from, x_to, y_to, z_to);
 
 	/* Make the switch in order to make computing the new bounding *
 	 * box simpler.  If the cost increase is too high, switch them *
@@ -1653,8 +1619,9 @@ static enum swap_result try_swap1(float t,
 	//abort_swap = find_affected_blocks(b_from, x_to, y_to, z_to);
   abort_swap = find_affected_blocks1(b_from, x_to, y_to, z_to, local_blocks_affected);
 
-  printf("[BLOCK_AFFECTED] tid=%d local_blocks_affected_num_moved_blocks=%d\n",
-      tid, local_blocks_affected->num_moved_blocks);
+  //printf("[BLOCK_AFFECTED] tid=%d local_blocks_affected.num_moved_blocks=%d, local_blocks_affected.moved_blocks.block_num=%d\n",
+  //    tid, local_blocks_affected->num_moved_blocks,
+  //    local_blocks_affected->moved_blocks[0].block_num);
 
 	if (abort_swap == FALSE) {
 
@@ -1735,8 +1702,8 @@ static enum swap_result try_swap1(float t,
 				update_td_cost1(*local_blocks_affected);
 			}
 
-      printf("[cost] tid=%d, bb_cost=%f, timing_cost=%f, delay_cost=%f",
-        tid, *bb_cost, *timing_cost, *delay_cost);
+      //printf("[cost] tid=%d, bb_cost=%g, timing_cost=%g, delay_cost=%g\n",
+      //  tid, *bb_cost, *timing_cost, *delay_cost);
 
 			/* update net cost functions and reset flags. */
 			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
@@ -1799,7 +1766,10 @@ static enum swap_result try_swap1(float t,
 		/* Resets the num_moved_blocks, but do not free blocks_moved array. Defensive Coding */
 		local_blocks_affected->num_moved_blocks = 0;
 
-		check_place(*bb_cost, *timing_cost, place_algorithm, *delay_cost);
+    // TAN: if we run check_place, it only makes sense to run it with one thread
+    //#pragma omp barrier
+    //if (tid == 0)
+		//  check_place(*bb_cost, *timing_cost, place_algorithm, *delay_cost);
 
 		return (keep_switch);
 	} else {
@@ -2524,6 +2494,8 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
 	for (iblk = 0; iblk < local_blocks_affected.num_moved_blocks; iblk++)
 	{
 		bnum = local_blocks_affected.moved_blocks[iblk].block_num;
+    //printf("[comp_delta_td_cost1] tid=%d, bnum=%d\n",
+    //  omp_get_thread_num(), bnum);
 		/* Go through all the pins in the moved block */
 		for (iblk_pin = 0; iblk_pin < block[bnum].type->num_pins; iblk_pin++) {
 			inet = block[bnum].nets[iblk_pin];
@@ -2658,6 +2630,8 @@ static void comp_delta_td_cost(float *delta_timing, float *delta_delay) {
 
 // TAN: this function is used during timing analysis. It examines all nets,
 // so it makese sense to just let one thread does this
+// Hmmmm when doing check_place, a thread gonna have stall information about
+// blocks managed by other threads
 static void comp_td_costs(float *timing_cost, float *connection_delay_sum) {
 	/* Computes the cost (from scratch) due to the delays and criticalities  *
 	 * on all point to point connections, we define the timing cost of       *
