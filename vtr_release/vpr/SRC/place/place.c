@@ -242,6 +242,12 @@ static int setup_blocks_affected(int b_from, int x_to, int y_to, int z_to);
 
 static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to);
 
+static enum swap_result try_swap1(float t, float *cost, float *bb_cost, float *timing_cost,
+		float rlim,
+		enum e_place_algorithm place_algorithm, float timing_tradeoff,
+		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
+		float *delay_cost, int block_num, int lb_x, int ub_x);
+
 static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *timing_cost,
 		float rlim,
 		enum e_place_algorithm place_algorithm, float timing_tradeoff,
@@ -284,6 +290,10 @@ static void comp_td_costs(float *timing_cost, float *connection_delay_sum);
 static enum swap_result assess_swap(float delta_c, float t);
 
 static boolean find_to(int x_from, int y_from, t_type_ptr type, float rlim, int *x_to, int *y_to);
+
+static boolean find_to1(int x_from, int y_from, t_type_ptr type, float rlim,
+  int *x_to, int *y_to, int lb_x, int ub_x);
+
 
 static void get_non_updateable_bb(int inet, struct s_bb *bb_coord_new);
 
@@ -533,10 +543,28 @@ void try_place(struct s_placer_opts placer_opts,
 		cost, bb_cost, timing_cost, delay_cost, width_fac);
 	update_screen(MAJOR, msg, PLACEMENT, FALSE);
 
+  // TEST
+
+//  int iblk;
+//	for (iblk = 0; iblk < num_blocks; iblk++) {
+//    printf("blk=%d: x=%d y=%d z=%d\n", iblk, block[iblk].x, block[iblk].y, block[iblk].z);
+//	}
+
+//  int x, y, z;
+//  for (x = 0; x <= nx + 1; x++) {
+//    for (y = 0; y <= ny + 1; y++) {
+//      for (z = 0; z < grid[x][y].type->capacity; z++) {
+//        printf("x=%d, y=%d, z=%d, block=%d\n",
+//          x, y, z, grid[x][y].blocks[z]);
+//      }
+//    }
+//  }
+
   // TAN: we set the number of threads before entering the loop.
   // TODO: would it be a good idea to change the number of threads
   // during loop execution?
   omp_set_num_threads(2);
+
 
   // TAN: the hard part is to identify which variables need to be privatized
   // to each thread ... VPR uses a lot of global variables, so it is not
@@ -547,6 +575,10 @@ void try_place(struct s_placer_opts placer_opts,
     #pragma omp parallel
     {
     int tid = omp_get_thread_num();
+    float local_cost = cost;
+    float local_bb_cost = bb_cost;
+    float local_delay_cost =  delay_cost;
+    float local_timing_cost = timing_cost;
 
     // TAN: let thread 0 does timing analysis. Would it be correct?
     if (tid == 0) {
@@ -598,77 +630,178 @@ void try_place(struct s_placer_opts placer_opts,
     }
     #pragma omp barrier
 
+    int x, y, z;
+    int s_idx;
+    int num_threads = omp_get_num_threads();
+    // TAN: for now, each thread has 2 subregions
+    int num_subregions = 2; 
+    int segment_x = (nx + 1 + num_threads - 1) / num_threads;
+    int segment_y = (ny + 1 + num_threads - 1) / num_threads;
+    int subsegment_x = (segment_x + num_subregions - 1) / num_subregions;
+    int subsegment_y = (segment_y + num_subregions - 1) / num_subregions;
+    int lb_y = 0;
+    int ub_y = ny + 1;
+
     // TAN: this is where it matters ...
-		inner_crit_iter_count = 1;
-		for (inner_iter = 0; inner_iter < move_lim; inner_iter++) {
-			swap_result = try_swap(t, &cost, &bb_cost, &timing_cost, rlim,
-					placer_opts.place_algorithm, placer_opts.timing_tradeoff,
-					inverse_prev_bb_cost, inverse_prev_timing_cost, &delay_cost);
-			if (swap_result == ACCEPTED) {
+    for (s_idx = 0; s_idx < num_subregions; s_idx++) {
+      int lb_x = tid * segment_x + s_idx * subsegment_x;
+      int ub_x = tid * segment_x + subsegment_x + s_idx * subsegment_x;
 
-				/* Move was accepted.  Update statistics that are useful for the annealing schedule. */
-				success_sum++;
-				av_cost += cost;
-				av_bb_cost += bb_cost;
-				av_timing_cost += timing_cost;
-				av_delay_cost += delay_cost;
-				sum_of_squares += cost * cost;
-				num_swap_accepted++;
-			} else if (swap_result == ABORTED) {
-				num_swap_aborted++;
-			} else { // swap_result == REJECTED
-				num_swap_rejected++;
-			}
+      int local_success_sum = 0;
+      double local_av_cost = 0.;
+      double local_av_bb_cost = 0.;
+      double local_av_timing_cost = 0.;
+      double local_av_delay_cost = 0.;
+      double local_sum_of_squares = 0.;
+      int local_num_swap_accepted = 0;
+      int local_num_swap_aborted = 0;
+      int local_num_swap_rejected = 0;
 
+      // TAN: expand the subregions to ensure the blocks can migrate to
+      // different subregions
+      if (!(tid == 0 && s_idx == 0))
+        lb_x = lb_x - 1;
 
-			if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
-					|| placer_opts.place_algorithm
-							== PATH_TIMING_DRIVEN_PLACE) {
+      if (!(tid == num_threads - 1 && s_idx == num_subregions - 1))
+        ub_x = ub_x + 1;
 
-				/* Do we want to re-timing analyze the circuit to get updated slack and criticality values? 
-				 * We do this only once in a while, since it is expensive.
-				 */
-				if (inner_crit_iter_count >= inner_recompute_limit
-						&& inner_iter != move_lim - 1) { /*on last iteration don't recompute */
+      //printf("[s_idx=%d] CHECK tid=%d, lb_x=%d, ub_x=%d, lb_y=%d, ub_y=%d\n",
+      //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
 
-					inner_crit_iter_count = 0;
-#ifdef VERBOSE
-					vpr_printf(TIO_MESSAGE_TRACE, "Inner loop recompute criticalities\n");
-#endif
-					if (placer_opts.place_algorithm
-							== NET_TIMING_DRIVEN_PLACE) {
-					    /* Use a constant delay per connection as the delay estimate, rather than
-						 * estimating based on the current placement.  Not a great idea, but not the 
-						 * default.
-						 */
-						place_delay_value = delay_cost / num_connections;
-						load_constant_net_delay(net_delay, place_delay_value,
-								clb_net, num_nets);
-					}
+      for (x = lb_x; x <= ub_x; x++) {
+        for (y = lb_y; y <= ub_y; y++) {
+          for (z = 0; z < grid[x][y].type->capacity; z++) {
+            int block_num = grid[x][y].blocks[z];
 
-					/* Using the delays in net_delay, do a timing analysis to update slacks and
-					 * criticalities; then update the timing cost since it will change.
-					 */
-					load_timing_graph_net_delays(net_delay);
-					do_timing_analysis(slacks, FALSE, FALSE, FALSE);
-					load_criticalities(slacks, crit_exponent);
-					comp_td_costs(&timing_cost, &delay_cost);
-				}
-				inner_crit_iter_count++;
-			}
-#ifdef VERBOSE
-			vpr_printf(TIO_MESSAGE_TRACE, "t = %g  cost = %g   bb_cost = %g timing_cost = %g move = %d dmax = %g\n",
-					t, cost, bb_cost, timing_cost, inner_iter, delay_cost);
-			if (fabs(bb_cost - comp_bb_cost(CHECK)) > bb_cost * ERROR_TOL)
-				exit(1);
-#endif
-		}
+            if (block_num == -1)
+              continue;
+
+            if (block[block_num].isFixed == TRUE)
+              continue;
+
+			      swap_result = try_swap1(t,
+              &local_cost, &local_bb_cost, &local_timing_cost,
+              rlim,
+					    placer_opts.place_algorithm, placer_opts.timing_tradeoff,
+					    inverse_prev_bb_cost, inverse_prev_timing_cost, &local_delay_cost,
+              block_num, lb_x, ub_x);
+
+			      if (swap_result == ACCEPTED) {
+				      /* Move was accepted.  Update statistics that are useful for the annealing schedule. */
+				      local_success_sum++;
+				      local_av_cost += local_cost;
+				      local_av_bb_cost += local_bb_cost;
+				      local_av_timing_cost += local_timing_cost;
+				      local_av_delay_cost += local_delay_cost;
+				      local_sum_of_squares += local_cost * local_cost;
+				      local_num_swap_accepted++;
+			      } else if (swap_result == ABORTED) {
+				      local_num_swap_aborted++;
+			      } else { // swap_result == REJECTED
+			  	    local_num_swap_rejected++;
+			      }
+
+          }
+        }
+      }
+
+      // TAN: here we update global variables, so must use atomic operations
+      #pragma omp critical
+      {
+      success_sum += local_success_sum;
+      av_cost += local_av_cost;
+      av_bb_cost += local_av_bb_cost;
+      av_timing_cost += local_av_timing_cost;
+      av_delay_cost += local_av_delay_cost;
+      sum_of_squares += local_sum_of_squares;
+      num_swap_accepted += local_num_swap_accepted;
+      num_swap_aborted += local_num_swap_aborted;
+      num_swap_rejected += local_num_swap_rejected;
+      }
+
+    }
+
+//		int local_inner_crit_iter_count = 1;
+//		for (inner_iter = 0; inner_iter < move_lim; inner_iter++) {
+//			swap_result = try_swap(t, &cost, &bb_cost, &timing_cost, rlim,
+//					placer_opts.place_algorithm, placer_opts.timing_tradeoff,
+//					inverse_prev_bb_cost, inverse_prev_timing_cost, &delay_cost);
+//
+//      // TAN: threads updating global variables. Need to specify
+//      // criical section here
+//      #pragma omp critical
+//      {
+//			if (swap_result == ACCEPTED) {
+//
+//				/* Move was accepted.  Update statistics that are useful for the annealing schedule. */
+//				success_sum++;
+//				av_cost += cost;
+//				av_bb_cost += bb_cost;
+//				av_timing_cost += timing_cost;
+//				av_delay_cost += delay_cost;
+//				sum_of_squares += cost * cost;
+//				num_swap_accepted++;
+//			} else if (swap_result == ABORTED) {
+//				num_swap_aborted++;
+//			} else { // swap_result == REJECTED
+//				num_swap_rejected++;
+//			}
+//      }
+
+      // TAN: for now, just ignore this
+//			if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
+//					|| placer_opts.place_algorithm
+//							== PATH_TIMING_DRIVEN_PLACE) {
+//
+//				/* Do we want to re-timing analyze the circuit to get updated slack and criticality values? 
+//				 * We do this only once in a while, since it is expensive.
+//				 */
+//				if (local_inner_crit_iter_count >= inner_recompute_limit
+//						&& inner_iter != move_lim - 1) { /*on last iteration don't recompute */
+//
+//					local_inner_crit_iter_count = 0;
+//#ifdef VERBOSE
+//					vpr_printf(TIO_MESSAGE_TRACE, "Inner loop recompute criticalities\n");
+//#endif
+//					if (placer_opts.place_algorithm
+//							== NET_TIMING_DRIVEN_PLACE) {
+//					    /* Use a constant delay per connection as the delay estimate, rather than
+//						 * estimating based on the current placement.  Not a great idea, but not the 
+//						 * default.
+//						 */
+//						place_delay_value = delay_cost / num_connections;
+//						load_constant_net_delay(net_delay, place_delay_value,
+//								clb_net, num_nets);
+//					}
+//
+//					/* Using the delays in net_delay, do a timing analysis to update slacks and
+//					 * criticalities; then update the timing cost since it will change.
+//					 */
+//					load_timing_graph_net_delays(net_delay);
+//					do_timing_analysis(slacks, FALSE, FALSE, FALSE);
+//					load_criticalities(slacks, crit_exponent);
+//					comp_td_costs(&timing_cost, &delay_cost);
+//				}
+//				local_inner_crit_iter_count++;
+//			}
+//#ifdef VERBOSE
+//			vpr_printf(TIO_MESSAGE_TRACE, "t = %g  cost = %g   bb_cost = %g timing_cost = %g move = %d dmax = %g\n",
+//					t, cost, bb_cost, timing_cost, inner_iter, delay_cost);
+//			if (fabs(bb_cost - comp_bb_cost(CHECK)) > bb_cost * ERROR_TOL)
+//				exit(1);
+//#endif
+//		}
 
 		/* Lines below prevent too much round-off error from accumulating *
 		 * in the cost over many iterations.  This round-off can lead to  *
 		 * error checks failing because the cost is different from what   *
 		 * you get when you recompute from scratch.                       */
 
+    #pragma omp barrier
+
+    // TAN: dedicate one thread to run the following code
+    // It will also update the temperature and rlim
+    if (tid == 0) {
 		moves_since_cost_recompute += move_lim;
 		if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
 			new_bb_cost = recompute_bb_cost();
@@ -745,6 +878,11 @@ void try_place(struct s_placer_opts placer_opts,
 			print_clb_placement("first_iteration_clb_placement.echo");
 		}
 #endif
+    }
+
+    // TAN: sync before we move to the next annealing iteration.
+    // Very conservative
+    #pragma omp barrier
 
     } // end of omp parallel region
 	}
@@ -1263,6 +1401,254 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 
 }
 
+// TAN: a new version of try_swap
+// We will use thread index to identify the placement region for a thread
+static enum swap_result try_swap1(float t,
+    float *cost, float *bb_cost, float *timing_cost,
+		float rlim,
+		enum e_place_algorithm place_algorithm, float timing_tradeoff,
+		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
+		float *delay_cost,
+    int block_num, int lb_x, int ub_x) {
+
+	/* Picks some block and moves it to another spot.  If this spot is   *
+	 * occupied, switch the blocks.  Assess the change in cost function  *
+	 * and accept or reject the move.  If rejected, return 0.  If        *
+	 * accepted return 1.  Pass back the new value of the cost function. * 
+	 * rlim is the range limiter.                                        */
+
+	enum swap_result keep_switch;
+	int b_from, x_from, y_from, z_from, x_to, y_to, z_to;
+	int num_nets_affected;
+	float delta_c, bb_delta_c, timing_delta_c, delay_delta_c;
+	int inet, iblk, bnum, iblk_pin, inet_affected;
+	int abort_swap = FALSE;
+
+	num_ts_called ++;
+
+	/* I'm using negative values of temp_net_cost as a flag, so DO NOT   *
+	 * use cost functions that can go negative.                          */
+
+	delta_c = 0; /* Change in cost due to this swap. */
+	bb_delta_c = 0;
+	timing_delta_c = 0;
+	delay_delta_c = 0.0;
+	
+	/* Pick a random block to be swapped with another random block    */
+  // TAN: make sure that we pick a block that is managed by tid
+	//b_from = my_irand(num_blocks - 1);
+  b_from = block_num;
+
+	/* If the pins are fixed we never move them from their initial    *
+	 * random locations.  The code below could be made more efficient *
+	 * by using the fact that pins appear first in the block list,    *
+	 * but this shouldn't cause any significant slowdown and won't be *
+	 * broken if I ever change the parser so that the pins aren't     *
+	 * necessarily at the start of the block list.                    */
+	//while (block[b_from].isFixed == TRUE) {
+	//	b_from = my_irand(num_blocks - 1);
+	//}
+
+	x_from = block[b_from].x;
+	y_from = block[b_from].y;
+	z_from = block[b_from].z;
+
+	//if (!find_to(x_from, y_from, block[b_from].type, rlim, &x_to,
+	//		&y_to))
+	//	return REJECTED;
+
+	if (!find_to1(x_from, y_from, block[b_from].type, rlim, &x_to,
+			&y_to, lb_x, ub_x))
+    return REJECTED;
+
+	z_to = 0;
+	if (grid[x_to][y_to].type->capacity > 1) {
+		z_to = my_irand(grid[x_to][y_to].type->capacity - 1);
+	}
+
+  int tid = omp_get_thread_num();
+  printf("tid=%d, x_from=%d, y_from=%d, z_from=%d, b_from=%d -- x_to=%d, y_to=%d, z_to=%d\n",
+    tid, x_from, y_from, z_from, b_from, x_to, y_to, z_to);
+
+	/* Make the switch in order to make computing the new bounding *
+	 * box simpler.  If the cost increase is too high, switch them *
+	 * back.  (block data structures switched, clbs not switched   *
+	 * until success of move is determined.)                       *
+	 * Also check that whether those are the only 2 blocks         *
+	 * to be moved - check for carry chains and other placement    *
+	 * macros.                                                     */
+	
+	/* Check whether the from_block is part of a macro first.      f it is, the whole macro has to be moved. Calculate the    *
+	 * x, y, z offsets of the swap to maintain relative placements *
+	 * of the blocks. Abort the swap if the to_block is part of a  *
+	 * macro (not supported yet).                                  */
+	
+	abort_swap = find_affected_blocks(b_from, x_to, y_to, z_to);
+
+	if (abort_swap == FALSE) {
+
+		// Find all the nets affected by this swap
+		num_nets_affected = find_affected_nets(ts_nets_to_update);
+
+		/* Go through all the pins in all the blocks moved and update the bounding boxes.  *
+		 * Do not update the net cost here since it should only be updated once per net,   *
+		 * not once per pin                                                                */
+		for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++)
+		{
+			bnum = blocks_affected.moved_blocks[iblk].block_num;
+
+			/* Go through all the pins in the moved block */
+			for (iblk_pin = 0; iblk_pin < block[bnum].type->num_pins; iblk_pin++)
+			{
+				inet = block[bnum].nets[iblk_pin];
+				if (inet == OPEN)
+					continue;
+				if (clb_net[inet].is_global)
+					continue;
+			
+				if (clb_net[inet].num_sinks < SMALL_NET) {
+					if(bb_updated_before[inet] == NOT_UPDATED_YET)
+						/* Brute force bounding box recomputation, once only for speed. */
+						get_non_updateable_bb(inet, &ts_bb_coord_new[inet]);
+				} else {
+					update_bb(inet, &ts_bb_coord_new[inet],
+							&ts_bb_edge_new[inet], 
+							blocks_affected.moved_blocks[iblk].xold, 
+							blocks_affected.moved_blocks[iblk].yold + block[bnum].type->pin_height[iblk_pin],
+							blocks_affected.moved_blocks[iblk].xnew, 
+							blocks_affected.moved_blocks[iblk].ynew + block[bnum].type->pin_height[iblk_pin]);
+				}
+			}
+		}
+			
+		/* Now update the cost function. The cost is only updated once for every net  *
+		 * May have to do major optimizations here later.                             */
+		for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
+			inet = ts_nets_to_update[inet_affected];
+
+			temp_net_cost[inet] = get_net_cost(inet, &ts_bb_coord_new[inet]);
+			bb_delta_c += temp_net_cost[inet] - net_cost[inet];
+		}
+
+    //printf("[bb_cost] tid=%d, bb_delta_c=%f, bb_cost=%f",
+    //  tid, bb_delta_c, *bb_cost);
+
+		if (place_algorithm == NET_TIMING_DRIVEN_PLACE
+				|| place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
+			/*in this case we redefine delta_c as a combination of timing and bb.  *
+			 *additionally, we normalize all values, therefore delta_c is in       *
+			 *relation to 1*/
+
+      // TAN: here, we compute the delta cost. Be careful of global variables
+			comp_delta_td_cost(&timing_delta_c, &delay_delta_c);
+
+			delta_c = (1 - timing_tradeoff) * bb_delta_c * inverse_prev_bb_cost
+					+ timing_tradeoff * timing_delta_c * inverse_prev_timing_cost;
+		} else {
+			delta_c = bb_delta_c;
+		}
+
+		/* 1 -> move accepted, 0 -> rejected. */
+		keep_switch = assess_swap(delta_c, t);
+		
+		if (keep_switch == ACCEPTED) {
+			*cost = *cost + delta_c;
+			*bb_cost = *bb_cost + bb_delta_c;
+	
+			if (place_algorithm == NET_TIMING_DRIVEN_PLACE
+					|| place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
+				/*update the point_to_point_timing_cost and point_to_point_delay_cost 
+				 * values from the temporary values */
+				*timing_cost = *timing_cost + timing_delta_c;
+				*delay_cost = *delay_cost + delay_delta_c;
+
+        // TAN: this is dangerous. Need to make sure that global variables
+        // are updated properly when running with multiple threads
+				update_td_cost();
+			}
+
+			/* update net cost functions and reset flags. */
+			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
+				inet = ts_nets_to_update[inet_affected];
+
+				bb_coords[inet] = ts_bb_coord_new[inet];
+				if (clb_net[inet].num_sinks >= SMALL_NET)
+					bb_num_on_edges[inet] = ts_bb_edge_new[inet];
+			
+				net_cost[inet] = temp_net_cost[inet];
+
+				/* negative temp_net_cost value is acting as a flag. */
+				temp_net_cost[inet] = -1;
+				bb_updated_before[inet] = NOT_UPDATED_YET;
+			}
+
+			/* Update clb data structures since we kept the move. */
+			/* Swap physical location */
+			for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++) {
+
+				x_to = blocks_affected.moved_blocks[iblk].xnew;
+				y_to = blocks_affected.moved_blocks[iblk].ynew;
+				z_to = blocks_affected.moved_blocks[iblk].znew;
+
+				x_from = blocks_affected.moved_blocks[iblk].xold;
+				y_from = blocks_affected.moved_blocks[iblk].yold;
+				z_from = blocks_affected.moved_blocks[iblk].zold;
+
+				b_from = blocks_affected.moved_blocks[iblk].block_num;
+
+				grid[x_to][y_to].blocks[z_to] = b_from;
+
+				if (blocks_affected.moved_blocks[iblk].swapped_to_empty == TRUE) {
+					grid[x_to][y_to].usage++;
+					grid[x_from][y_from].usage--;
+					grid[x_from][y_from].blocks[z_from] = -1;
+				}
+			
+			} // Finish updating clb for all blocks
+
+		} else { /* Move was rejected.  */
+
+			/* Reset the net cost function flags first. */
+			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
+				inet = ts_nets_to_update[inet_affected];
+				temp_net_cost[inet] = -1;
+				bb_updated_before[inet] = NOT_UPDATED_YET;
+			}
+
+			/* Restore the block data structures to their state before the move. */
+			for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++) {
+				b_from = blocks_affected.moved_blocks[iblk].block_num;
+
+				block[b_from].x = blocks_affected.moved_blocks[iblk].xold;
+				block[b_from].y = blocks_affected.moved_blocks[iblk].yold;
+				block[b_from].z = blocks_affected.moved_blocks[iblk].zold;
+			}
+		}
+
+		/* Resets the num_moved_blocks, but do not free blocks_moved array. Defensive Coding */
+		blocks_affected.num_moved_blocks = 0;
+
+		check_place(*bb_cost, *timing_cost, place_algorithm, *delay_cost);
+
+		return (keep_switch);
+	} else {
+
+		/* Restore the block data structures to their state before the move. */
+		for (iblk = 0; iblk < blocks_affected.num_moved_blocks; iblk++) {
+			b_from = blocks_affected.moved_blocks[iblk].block_num;
+
+			block[b_from].x = blocks_affected.moved_blocks[iblk].xold;
+			block[b_from].y = blocks_affected.moved_blocks[iblk].yold;
+			block[b_from].z = blocks_affected.moved_blocks[iblk].zold;
+		}
+
+		/* Resets the num_moved_blocks, but do not free blocks_moved array. Defensive Coding */
+		blocks_affected.num_moved_blocks = 0;
+		
+		return ABORTED;
+	}
+}
+
 static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *timing_cost,
 		float rlim,
 		enum e_place_algorithm place_algorithm, float timing_tradeoff,
@@ -1529,6 +1915,92 @@ static int find_affected_nets(int *nets_to_update) {
 	return num_affected_nets;
 }
 
+// TAN: we need to modify this function so that the return block is managed by
+// a corresponding tid. Or just changing rlim is enough?
+static boolean find_to1(int x_from, int y_from, t_type_ptr type, float rlim, int *x_to, int *y_to,
+   int lb_x, int ub_x) {
+
+	/* Returns the point to which I want to swap, properly range limited. 
+	 * rlim must always be between 1 and nx (inclusive) for this routine  
+	 * to work.  Assumes that a column only contains blocks of the same type.
+	 */
+
+	int x_rel, y_rel, rlx, rly, min_x, max_x, min_y, max_y;
+	int num_tries;
+	int active_area;
+	boolean is_legal;
+	int block_index, ipos;
+
+	assert(type == grid[x_from][y_from].type);
+
+	rlx = (int)std::min((float)nx + 1, rlim); 
+	rly = (int)std::min((float)ny + 1, rlim); /* Added rly for aspect_ratio != 1 case. */
+	active_area = 4 * rlx * rly;
+
+  // TAN: specify the boundary of the subregion
+	//min_x = std::max(0, x_from - rlx);
+	//max_x = std::min(nx + 1, x_from + rlx);
+	min_x = std::max(lb_x, x_from - rlx);
+	max_x = std::min(ub_x, x_from + rlx);
+	min_y = std::max(0, y_from - rly);
+	max_y = std::min(ny + 1, y_from + rly);
+
+#ifdef DEBUG
+	if (rlx < 1 || rlx > nx + 1) {
+		vpr_printf(TIO_MESSAGE_ERROR, "in find_to: rlx = %d\n", rlx);
+		exit(1);
+	}
+#endif
+
+	num_tries = 0;
+	block_index = type->index;
+
+	do { /* Until legal */
+		is_legal = TRUE;
+
+		/* Limit the number of tries when searching for an alternative position */
+		if(num_tries >= 2 * std::min(active_area / type->height, num_legal_pos[block_index]) + 10) {
+			/* Tried randomly searching for a suitable position */
+			return FALSE;
+		} else {
+			num_tries++;
+		}
+		if(nx / 4 < rlx || 
+			ny / 4 < rly ||
+			num_legal_pos[block_index] < active_area) {
+			ipos = my_irand(num_legal_pos[block_index] - 1);
+			*x_to = legal_pos[block_index][ipos].x;
+			*y_to = legal_pos[block_index][ipos].y;
+		} else {
+			x_rel = my_irand(std::max(0, max_x - min_x));
+			*x_to = min_x + x_rel;
+			y_rel = my_irand(std::max(0, max_y - min_y));
+			*y_to = min_y + y_rel;
+			*y_to = (*y_to) - grid[*x_to][*y_to].offset; /* align it */
+		}
+		
+		if((x_from == *x_to) && (y_from == *y_to)) {
+			is_legal = FALSE;
+		} else if(*x_to > max_x || *x_to < min_x || *y_to > max_y || *y_to < min_y) {
+			is_legal = FALSE;
+		} else if(grid[*x_to][*y_to].type != grid[x_from][y_from].type) {
+			is_legal = FALSE;
+		}
+
+		assert(*x_to >= 0 && *x_to <= nx + 1);
+		assert(*y_to >= 0 && *y_to <= ny + 1);
+	} while (is_legal == FALSE);
+
+#ifdef DEBUG
+	if (*x_to < 0 || *x_to > nx + 1 || *y_to < 0 || *y_to > ny + 1) {
+		vpr_printf(TIO_MESSAGE_ERROR, "in routine find_to: (x_to,y_to) = (%d,%d)\n", *x_to, *y_to);
+		exit(1);
+	}
+#endif
+	assert(type == grid[*x_to][*y_to].type);
+	return TRUE;
+}
+
 static boolean find_to(int x_from, int y_from, t_type_ptr type, float rlim, int *x_to, int *y_to) {
 
 	/* Returns the point to which I want to swap, properly range limited. 
@@ -1639,6 +2111,9 @@ static enum swap_result assess_swap(float delta_c, float t) {
 	return (accept);
 }
 
+// TAN: this function seems to compute the bb cost for all nets. It might not
+// make sense to let each thread run this function. Rather, we should dedicate
+// one thread to execute it (or use reduction to locallly parallelize the function)
 static float recompute_bb_cost(void) {
 
 	/* Recomputes the cost to eliminate roundoff that may have accrued.  *
@@ -1838,6 +2313,8 @@ static void comp_delta_td_cost(float *delta_timing, float *delta_delay) {
 	*delta_delay = delta_delay_cost;
 }
 
+// TAN: this function is used during timing analysis. It examines all nets,
+// so it makese sense to just let one thread does this
 static void comp_td_costs(float *timing_cost, float *connection_delay_sum) {
 	/* Computes the cost (from scratch) due to the delays and criticalities  *
 	 * on all point to point connections, we define the timing cost of       *
@@ -1875,6 +2352,7 @@ static void comp_td_costs(float *timing_cost, float *connection_delay_sum) {
 	*connection_delay_sum = loc_connection_delay_sum;
 }
 
+// TAN: this function examines all nets
 static float comp_bb_cost(enum cost_methods method) {
 
 	/* Finds the cost from scratch.  Done only when the placement   *
