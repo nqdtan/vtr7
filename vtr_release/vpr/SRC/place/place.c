@@ -606,16 +606,6 @@ void try_place(struct s_placer_opts placer_opts,
 
  	while (exit_crit(t, cost, annealing_sched) == 0) {
 
-    float local_cost = cost;
-    float local_bb_cost = bb_cost;
-    float local_delay_cost =  delay_cost;
-    float local_timing_cost = timing_cost;
-
-    float old_cost = cost;
-    float old_bb_cost = bb_cost;
-    float old_delay_cost = delay_cost;
-    float old_timing_cost = timing_cost;
-
     // TAN: let thread 0 does timing analysis. Would it be correct?
     if (tid == 0) {
 		  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -659,12 +649,22 @@ void try_place(struct s_placer_opts placer_opts,
 
 			  /*at each temperature change we update these values to be used     */
 			  /*for normalizing the tradeoff between timing and wirelength (bb)  */
-			  inverse_prev_bb_cost = 1 / local_bb_cost;
+			  inverse_prev_bb_cost = 1 / bb_cost;
 			  /*Prevent inverse timing cost from going to infinity */
 			  inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
 		  }
     }
     #pragma omp barrier
+
+    float local_cost = cost;
+    float local_bb_cost = bb_cost;
+    float local_delay_cost =  delay_cost;
+    float local_timing_cost = timing_cost;
+
+    float old_cost = cost;
+    float old_bb_cost = bb_cost;
+    float old_delay_cost = delay_cost;
+    float old_timing_cost = timing_cost;
 
     int local_success_sum = 0;
     double local_av_cost = 0.;
@@ -677,68 +677,78 @@ void try_place(struct s_placer_opts placer_opts,
     int local_num_swap_rejected = 0;
     int local_num_ts_called = 0;
 
-    // TAN: this is where it matters ...
-    for (s_idx = 0; s_idx < num_subregions; s_idx++) {
-      int lb_x = tid * segment_x + s_idx * subsegment_x;
-      int ub_x = tid * segment_x + subsegment_x + s_idx * subsegment_x;
+    int idx;
+    // TAN: we need to increase the number of moves per annealing iteration
+    // to increase the likelihood to blocks being swapped out of its original
+    // subdomain. There is a trade-off between QoR and runtime here:
+    // this number should be tuned with care
+    // TODO: would it make sense to change num_moves during annealing process?
+    //
+    int num_moves = 10;
+    for (idx = 0; idx < num_moves; idx++) {
+      // TAN: this is where it matters ...
+      for (s_idx = 0; s_idx < num_subregions; s_idx++) {
+        int lb_x = tid * segment_x + s_idx * subsegment_x;
+        int ub_x = tid * segment_x + subsegment_x + s_idx * subsegment_x;
 
+        // TAN: expand the subregions to ensure the blocks can migrate to
+        // different subregions
+        if (!(tid == 0 && s_idx == 0))
+          lb_x = lb_x - 1;
 
-      // TAN: expand the subregions to ensure the blocks can migrate to
-      // different subregions
-      if (!(tid == 0 && s_idx == 0))
-        lb_x = lb_x - 1;
+        if (!(tid == num_threads - 1 && s_idx == num_subregions - 1))
+          ub_x = ub_x + 1;
 
-      if (!(tid == num_threads - 1 && s_idx == num_subregions - 1))
-        ub_x = ub_x + 1;
+        //printf("[s_idx=%d] CHECK tid=%d, lb_x=%d, ub_x=%d, lb_y=%d, ub_y=%d\n",
+        //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
 
-      //printf("[s_idx=%d] CHECK tid=%d, lb_x=%d, ub_x=%d, lb_y=%d, ub_y=%d\n",
-      //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
+        for (x = lb_x; x <= ub_x; x++) {
+          for (y = lb_y; y <= ub_y; y++) {
+            for (z = 0; z < grid[x][y].type->capacity; z++) {
+              int block_num = grid[x][y].blocks[z];
 
-      for (x = lb_x; x <= ub_x; x++) {
-        for (y = lb_y; y <= ub_y; y++) {
-          for (z = 0; z < grid[x][y].type->capacity; z++) {
-            int block_num = grid[x][y].blocks[z];
+              if (block_num == -1)
+                continue;
 
-            if (block_num == -1)
-              continue;
+              if (block[block_num].isFixed == TRUE)
+                continue;
 
-            if (block[block_num].isFixed == TRUE)
-              continue;
+              local_num_ts_called++;
+			        swap_result = try_swap1(t,
+                &local_cost, &local_bb_cost, &local_timing_cost,
+                rlim,
+					      placer_opts.place_algorithm, placer_opts.timing_tradeoff,
+					      inverse_prev_bb_cost, inverse_prev_timing_cost, &local_delay_cost,
+                &local_blocks_affected,
+                local_ts_nets_to_update,
+                block_num, lb_x, ub_x);
 
-            local_num_ts_called++;
-			      swap_result = try_swap1(t,
-              &local_cost, &local_bb_cost, &local_timing_cost,
-              rlim,
-					    placer_opts.place_algorithm, placer_opts.timing_tradeoff,
-					    inverse_prev_bb_cost, inverse_prev_timing_cost, &local_delay_cost,
-              &local_blocks_affected,
-              local_ts_nets_to_update,
-              block_num, lb_x, ub_x);
+			        if (swap_result == ACCEPTED) {
+				        /* Move was accepted.  Update statistics that are useful for the annealing schedule. */
+				        local_success_sum++;
+				        local_av_cost += local_cost;
+				        local_av_bb_cost += local_bb_cost;
+				        local_av_timing_cost += local_timing_cost;
+				        local_av_delay_cost += local_delay_cost;
+				        local_sum_of_squares += local_cost * local_cost;
+				        local_num_swap_accepted++;
+			        } else if (swap_result == ABORTED) {
+				        local_num_swap_aborted++;
+			        } else { // swap_result == REJECTED
+			  	      local_num_swap_rejected++;
+			        }
 
-			      if (swap_result == ACCEPTED) {
-				      /* Move was accepted.  Update statistics that are useful for the annealing schedule. */
-				      local_success_sum++;
-				      local_av_cost += local_cost;
-				      local_av_bb_cost += local_bb_cost;
-				      local_av_timing_cost += local_timing_cost;
-				      local_av_delay_cost += local_delay_cost;
-				      local_sum_of_squares += local_cost * local_cost;
-				      local_num_swap_accepted++;
-			      } else if (swap_result == ABORTED) {
-				      local_num_swap_aborted++;
-			      } else { // swap_result == REJECTED
-			  	    local_num_swap_rejected++;
-			      }
-
+            }
           }
         }
-      }
 
-      // TODO: perform timing analysis here as in the original code
+        // TODO: perform timing analysis here as in the original code
 
-      // TAN: sync before moving to the next iteration to ensure no swap conflict
-      #pragma omp barrier
-    }
+        // TAN: sync before moving to the next iteration to ensure no swap conflict
+        #pragma omp barrier
+      } // num_subregions
+
+    } // num_moves
 
     // TAN: here we update global variables, so must use atomic operations
     #pragma omp critical
@@ -753,18 +763,7 @@ void try_place(struct s_placer_opts placer_opts,
     num_swap_accepted += local_num_swap_accepted;
     num_swap_aborted += local_num_swap_aborted;
     num_swap_rejected += local_num_swap_rejected;
-    }
 
-		/* Lines below prevent too much round-off error from accumulating *
-		 * in the cost over many iterations.  This round-off can lead to  *
-		 * error checks failing because the cost is different from what   *
-		 * you get when you recompute from scratch.                       */
-
-    printf("[LOCAL COST %d] local_cost=%g, local_bb_cost=%g, local_timing_cost=%g, local_delay_cost=%g\n",
-      tid, local_cost, local_bb_cost, local_timing_cost, local_delay_cost);
-
-    #pragma omp critical
-    {
     cost += local_cost;
     bb_cost += local_bb_cost;
     timing_cost += local_timing_cost;
@@ -772,98 +771,108 @@ void try_place(struct s_placer_opts placer_opts,
     moves_since_cost_recompute += local_num_ts_called;
     }
 
+    //printf("[LOCAL COST %d] local_cost=%g, local_bb_cost=%g, local_timing_cost=%g, local_delay_cost=%g\n",
+    //  tid, local_cost, local_bb_cost, local_timing_cost, local_delay_cost);
+
+
     #pragma omp barrier
 
+		/* Lines below prevent too much round-off error from accumulating *
+		 * in the cost over many iterations.  This round-off can lead to  *
+		 * error checks failing because the cost is different from what   *
+		 * you get when you recompute from scratch.                       */
+
     if (tid == 0) {
-    cost -= old_cost * num_threads;
-    bb_cost -= old_bb_cost * num_threads;
-    timing_cost -= old_timing_cost * num_threads;
-    delay_cost -= old_delay_cost * num_threads;
+      cost -= old_cost * num_threads;
+      bb_cost -= old_bb_cost * num_threads;
+      timing_cost -= old_timing_cost * num_threads;
+      delay_cost -= old_delay_cost * num_threads;
 
-    printf("moves: %d, cost=%g, old_cost=%g, bb_cost=%g, old_bb_cost=%g, timing_cost=%g, old_timing_cost=%g, delay_cost=%g, old_delay_cost=%g\n",
-      moves_since_cost_recompute, cost, old_cost, bb_cost, old_bb_cost,
-      timing_cost, old_timing_cost, delay_cost, old_delay_cost);
+      //printf("moves: %d, cost=%g, old_cost=%g, bb_cost=%g, old_bb_cost=%g, timing_cost=%g, old_timing_cost=%g, delay_cost=%g, old_delay_cost=%g\n",
+      //  moves_since_cost_recompute, cost, old_cost, bb_cost, old_bb_cost,
+      //  timing_cost, old_timing_cost, delay_cost, old_delay_cost);
 
-		//moves_since_cost_recompute += move_lim;
-		if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
-      printf("Recompute ...\n");
-			new_bb_cost = recompute_bb_cost();
+		  //moves_since_cost_recompute += move_lim;
+		  if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
+        //printf("Recompute ...\n");
+			  new_bb_cost = recompute_bb_cost();
 
-			if (fabs(new_bb_cost - bb_cost) > bb_cost * ERROR_TOL) {
-				vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_bb_cost = %g, old bb_cost = %g\n", 
-						new_bb_cost, bb_cost);
-        // TAN: hmmmm ...
-				exit(1);
-			}
-			bb_cost = new_bb_cost;
+			  if (fabs(new_bb_cost - bb_cost) > bb_cost * ERROR_TOL) {
+				  vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_bb_cost = %g, old bb_cost = %g\n", 
+						  new_bb_cost, bb_cost);
+          // TAN: hmmm ...
+				  //exit(1);
+			  }
+			  bb_cost = new_bb_cost;
 
-			if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
-					|| placer_opts.place_algorithm
-							== PATH_TIMING_DRIVEN_PLACE) {
+			  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
+					  || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
 
-				comp_td_costs(&new_timing_cost, &new_delay_cost);
+				  comp_td_costs(&new_timing_cost, &new_delay_cost);
 
-				if (fabs(new_timing_cost - timing_cost) > timing_cost * ERROR_TOL) {
-					vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_timing_cost = %g, old timing_cost = %g\n",
-							new_timing_cost, timing_cost);
-					exit(1);
-				}
+				  if (fabs(new_timing_cost - timing_cost) > timing_cost * ERROR_TOL) {
+					  vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_timing_cost = %g, old timing_cost = %g\n",
+							  new_timing_cost, timing_cost);
+					  exit(1);
+				  }
 
-				if (fabs(new_delay_cost - delay_cost) > delay_cost * ERROR_TOL) {
-					vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_delay_cost = %g, old delay_cost = %g\n",
-							new_delay_cost, delay_cost);
-					exit(1);
-				}
-				timing_cost = new_timing_cost;
-			}
+				  if (fabs(new_delay_cost - delay_cost) > delay_cost * ERROR_TOL) {
+					  vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_delay_cost = %g, old delay_cost = %g\n",
+							  new_delay_cost, delay_cost);
+            // TAN: hmmm ...
+					  //exit(1);
+				  }
 
-			if (placer_opts.place_algorithm == BOUNDING_BOX_PLACE) {
-				cost = new_bb_cost;
-			}
-			moves_since_cost_recompute = 0;
-		}
+				  timing_cost = new_timing_cost;
+			  }
 
-		tot_iter += move_lim;
-		success_rat = ((float) success_sum) / move_lim;
-		if (success_sum == 0) {
-			av_cost = cost;
-			av_bb_cost = bb_cost;
-			av_timing_cost = timing_cost;
-			av_delay_cost = delay_cost;
-		} else {
-			av_cost /= success_sum;
-			av_bb_cost /= success_sum;
-			av_timing_cost /= success_sum;
-			av_delay_cost /= success_sum;
-		}
-		std_dev = get_std_dev(success_sum, sum_of_squares, av_cost);
+			  if (placer_opts.place_algorithm == BOUNDING_BOX_PLACE) {
+				  cost = new_bb_cost;
+			  }
+			  moves_since_cost_recompute = 0;
+		  }
 
-		oldt = t; /* for finding and printing alpha. */
-		update_t(&t, std_dev, rlim, success_rat, annealing_sched);
+		  tot_iter += move_lim;
+		  success_rat = ((float) success_sum) / move_lim;
+		  if (success_sum == 0) {
+			  av_cost = cost;
+			  av_bb_cost = bb_cost;
+			  av_timing_cost = timing_cost;
+			  av_delay_cost = delay_cost;
+		  } else {
+			  av_cost /= success_sum;
+			  av_bb_cost /= success_sum;
+			  av_timing_cost /= success_sum;
+			  av_delay_cost /= success_sum;
+		  }
+		  std_dev = get_std_dev(success_sum, sum_of_squares, av_cost);
+
+		  oldt = t; /* for finding and printing alpha. */
+		  update_t(&t, std_dev, rlim, success_rat, annealing_sched);
 
 #ifndef SPEC
-		critical_path_delay = get_critical_path_delay();
-		vpr_printf(TIO_MESSAGE_INFO, "%9.5f %9.5g %11.6g %11.6g %11.6g %11.6g %8.4f %8.4f %7.4f %7.4f %7.4f %9d %7.4f\n",
-				oldt, av_cost, av_bb_cost, av_timing_cost, av_delay_cost, place_delay_value, 
-				critical_path_delay, success_rat, std_dev, rlim, crit_exponent, tot_iter, t / oldt);
+		  critical_path_delay = get_critical_path_delay();
+		  vpr_printf(TIO_MESSAGE_INFO, "%9.5f %9.5g %11.6g %11.6g %11.6g %11.6g %8.4f %8.4f %7.4f %7.4f %7.4f %9d %7.4f\n",
+				  oldt, av_cost, av_bb_cost, av_timing_cost, av_delay_cost, place_delay_value, 
+				  critical_path_delay, success_rat, std_dev, rlim, crit_exponent, tot_iter, t / oldt);
 #endif
 
-		//sprintf(msg, "Cost: %g  BB Cost %g  TD Cost %g  Temperature: %g",
-		//		cost, bb_cost, timing_cost, t);
-		update_screen(MINOR, msg, PLACEMENT, FALSE);
-		update_rlim(&rlim, success_rat);
+		  //sprintf(msg, "Cost: %g  BB Cost %g  TD Cost %g  Temperature: %g",
+		  //		cost, bb_cost, timing_cost, t);
+		  update_screen(MINOR, msg, PLACEMENT, FALSE);
+		  update_rlim(&rlim, success_rat);
 
-		if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
-				|| placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
-			crit_exponent = (1 - (rlim - final_rlim) * inverse_delta_rlim)
+		  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
+				  || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
+			  crit_exponent = (1 - (rlim - final_rlim) * inverse_delta_rlim)
 					* (placer_opts.td_place_exp_last
 							- placer_opts.td_place_exp_first)
 					+ placer_opts.td_place_exp_first;
-		}
+		  }
 #ifdef VERBOSE
-		if (getEchoEnabled()) {
-			print_clb_placement("first_iteration_clb_placement.echo");
-		}
+		  if (getEchoEnabled()) {
+			  print_clb_placement("first_iteration_clb_placement.echo");
+		  }
 #endif
     }
 
