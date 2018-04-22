@@ -572,6 +572,9 @@ void try_place(struct s_placer_opts placer_opts,
 //    }
 //  }
 
+  // This will replace move_lim for calculating success_rate
+  int num_total_moves;
+
   // TAN: we set the number of threads before entering the loop.
   // TODO: would it be a good idea to change the number of threads
   // during loop execution?
@@ -608,6 +611,7 @@ void try_place(struct s_placer_opts placer_opts,
 
     // TAN: let thread 0 does timing analysis. Would it be correct?
     if (tid == 0) {
+
 		  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
 				  || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
 			  cost = 1;
@@ -620,6 +624,7 @@ void try_place(struct s_placer_opts placer_opts,
 		  av_timing_cost = 0.;
 		  sum_of_squares = 0.;
 		  success_sum = 0;
+      num_total_moves = 0;
 
       // TAN: this is timing analysis
 		  if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -676,6 +681,7 @@ void try_place(struct s_placer_opts placer_opts,
     int local_num_swap_aborted = 0;
     int local_num_swap_rejected = 0;
     int local_num_ts_called = 0;
+    int num_local_moves = 0;
 
     int idx;
     // TAN: we need to increase the number of moves per annealing iteration
@@ -684,7 +690,7 @@ void try_place(struct s_placer_opts placer_opts,
     // this number should be tuned with care
     // TODO: would it make sense to change num_moves during annealing process?
     //
-    int num_moves = 10;
+    int num_moves = 3;
     for (idx = 0; idx < num_moves; idx++) {
       // TAN: this is where it matters ...
       for (s_idx = 0; s_idx < num_subregions; s_idx++) {
@@ -705,6 +711,8 @@ void try_place(struct s_placer_opts placer_opts,
         for (x = lb_x; x <= ub_x; x++) {
           for (y = lb_y; y <= ub_y; y++) {
             for (z = 0; z < grid[x][y].type->capacity; z++) {
+              num_local_moves++;
+
               int block_num = grid[x][y].blocks[z];
 
               if (block_num == -1)
@@ -769,6 +777,7 @@ void try_place(struct s_placer_opts placer_opts,
     timing_cost += local_timing_cost;
     delay_cost += local_delay_cost;
     moves_since_cost_recompute += local_num_ts_called;
+    num_total_moves +=  num_local_moves;
     }
 
     //printf("[LOCAL COST %d] local_cost=%g, local_bb_cost=%g, local_timing_cost=%g, local_delay_cost=%g\n",
@@ -829,11 +838,12 @@ void try_place(struct s_placer_opts placer_opts,
 			  if (placer_opts.place_algorithm == BOUNDING_BOX_PLACE) {
 				  cost = new_bb_cost;
 			  }
+
 			  moves_since_cost_recompute = 0;
 		  }
 
-		  tot_iter += move_lim;
-		  success_rat = ((float) success_sum) / move_lim;
+		  tot_iter += num_total_moves;
+		  success_rat = ((float) success_sum) / num_total_moves;
 		  if (success_sum == 0) {
 			  av_cost = cost;
 			  av_bb_cost = bb_cost;
