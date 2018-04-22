@@ -252,6 +252,7 @@ static enum swap_result try_swap1(float t, float *cost, float *bb_cost, float *t
 		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
 		float *delay_cost,
     t_pl_blocks_to_be_moved *local_blocks_affected,
+    int *local_ts_nets_to_update,
     int block_num, int lb_x, int ub_x);
 
 static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *timing_cost,
@@ -601,6 +602,8 @@ void try_place(struct s_placer_opts placer_opts,
       num_blocks, sizeof(t_pl_moved_block));
   local_blocks_affected.num_moved_blocks = 0;
 
+	int *local_ts_nets_to_update = (int *) my_calloc(num_nets, sizeof(int));
+
  	while (exit_crit(t, cost, annealing_sched) == 0) {
 
     float local_cost = cost;
@@ -709,6 +712,7 @@ void try_place(struct s_placer_opts placer_opts,
 					    placer_opts.place_algorithm, placer_opts.timing_tradeoff,
 					    inverse_prev_bb_cost, inverse_prev_timing_cost, &local_delay_cost,
               &local_blocks_affected,
+              local_ts_nets_to_update,
               block_num, lb_x, ub_x);
 
 			      if (swap_result == ACCEPTED) {
@@ -789,7 +793,7 @@ void try_place(struct s_placer_opts placer_opts,
 				vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_bb_cost = %g, old bb_cost = %g\n", 
 						new_bb_cost, bb_cost);
         // TAN: hmmmm ...
-				//exit(1);
+				exit(1);
 			}
 			bb_cost = new_bb_cost;
 
@@ -1536,6 +1540,7 @@ static enum swap_result try_swap1(float t,
 		float inverse_prev_bb_cost, float inverse_prev_timing_cost,
 		float *delay_cost,
     t_pl_blocks_to_be_moved *local_blocks_affected,
+    int *local_ts_nets_to_update,
     int block_num, int lb_x, int ub_x) {
 
 	/* Picks some block and moves it to another spot.  If this spot is   *
@@ -1626,7 +1631,7 @@ static enum swap_result try_swap1(float t,
 	if (abort_swap == FALSE) {
 
 		// Find all the nets affected by this swap
-		num_nets_affected = find_affected_nets1(ts_nets_to_update, *local_blocks_affected);
+		num_nets_affected = find_affected_nets1(local_ts_nets_to_update, *local_blocks_affected);
 
 		/* Go through all the pins in all the blocks moved and update the bounding boxes.  *
 		 * Do not update the net cost here since it should only be updated once per net,   *
@@ -1662,7 +1667,7 @@ static enum swap_result try_swap1(float t,
 		/* Now update the cost function. The cost is only updated once for every net  *
 		 * May have to do major optimizations here later.                             */
 		for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
-			inet = ts_nets_to_update[inet_affected];
+			inet = local_ts_nets_to_update[inet_affected];
 
 			temp_net_cost[inet] = get_net_cost(inet, &ts_bb_coord_new[inet]);
 			bb_delta_c += temp_net_cost[inet] - net_cost[inet];
@@ -1707,7 +1712,7 @@ static enum swap_result try_swap1(float t,
 
 			/* update net cost functions and reset flags. */
 			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
-				inet = ts_nets_to_update[inet_affected];
+				inet = local_ts_nets_to_update[inet_affected];
 
 				bb_coords[inet] = ts_bb_coord_new[inet];
 				if (clb_net[inet].num_sinks >= SMALL_NET)
@@ -1748,7 +1753,7 @@ static enum swap_result try_swap1(float t,
 
 			/* Reset the net cost function flags first. */
 			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
-				inet = ts_nets_to_update[inet_affected];
+				inet = local_ts_nets_to_update[inet_affected];
 				temp_net_cost[inet] = -1;
 				bb_updated_before[inet] = NOT_UPDATED_YET;
 			}
