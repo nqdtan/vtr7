@@ -29,7 +29,8 @@
 
 /* This defines the error tolerance for floating points variables used in *
  * cost computation. 0.01 means that there is a 1% error tolerance.       */
-#define ERROR_TOL .01
+//#define ERROR_TOL .01
+#define ERROR_TOL .1
 
 /* This defines the maximum number of swap attempts before invoking the   *
  * once-in-a-while placement legality check as well as floating point     *
@@ -690,7 +691,7 @@ void try_place(struct s_placer_opts placer_opts,
     // this number should be tuned with care
     // TODO: would it make sense to change num_moves during annealing process?
     //
-    int num_moves = 3;
+    int num_moves = 1;
     for (idx = 0; idx < num_moves; idx++) {
       // TAN: this is where it matters ...
       for (s_idx = 0; s_idx < num_subregions; s_idx++) {
@@ -710,6 +711,10 @@ void try_place(struct s_placer_opts placer_opts,
 
         for (x = lb_x; x <= ub_x; x++) {
           for (y = lb_y; y <= ub_y; y++) {
+
+            //if (my_irand(99) < 10)
+            //  continue;
+
             for (z = 0; z < grid[x][y].type->capacity; z++) {
               num_local_moves++;
 
@@ -828,8 +833,7 @@ void try_place(struct s_placer_opts placer_opts,
 				  if (fabs(new_delay_cost - delay_cost) > delay_cost * ERROR_TOL) {
 					  vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_delay_cost = %g, old delay_cost = %g\n",
 							  new_delay_cost, delay_cost);
-            // TAN: hmmm ...
-					  //exit(1);
+					  exit(1);
 				  }
 
 				  timing_cost = new_timing_cost;
@@ -1515,7 +1519,7 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 		x_swap_offset = x_to - x_from;
 		y_swap_offset = y_to - y_from;
 		z_swap_offset = z_to - z_from;
-		printf("[TAN} found macro\n");
+		printf("[TAN] found macro\n");
 		for (imember = 0; imember < pl_macros[imacro].num_blocks && abort_swap == FALSE; imember++) {
 
 			// Gets the new from and to info for every block in the macro
@@ -1623,7 +1627,7 @@ static enum swap_result try_swap1(float t,
 		z_to = my_irand(grid[x_to][y_to].type->capacity - 1);
 	}
 
-  //int tid = omp_get_thread_num();
+  int tid = omp_get_thread_num();
   //printf("tid=%d, x_from=%d, y_from=%d, z_from=%d, b_from=%d -- x_to=%d, y_to=%d, z_to=%d\n",
   //  tid, x_from, y_from, z_from, b_from, x_to, y_to, z_to);
 
@@ -1689,7 +1693,7 @@ static enum swap_result try_swap1(float t,
 			inet = local_ts_nets_to_update[inet_affected];
 
 			temp_net_cost[inet] = get_net_cost(inet, &ts_bb_coord_new[inet]);
-			bb_delta_c += temp_net_cost[inet] - net_cost[inet];
+ 			bb_delta_c += temp_net_cost[inet] - net_cost[inet];
 		}
 
 		if (place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -1725,9 +1729,9 @@ static enum swap_result try_swap1(float t,
         // are updated properly when running with multiple threads
 				update_td_cost1(*local_blocks_affected);
 			}
-
-      //printf("[cost] tid=%d, bb_cost=%g, timing_cost=%g, delay_cost=%g\n",
-      //  tid, *bb_cost, *timing_cost, *delay_cost);
+      //printf("swap accepted %d\n", tid);
+      //printf("[cost] tid=%d, bb_cost=%g, timing_cost=%g, delay_cost=%g, delay_delta_c=%g\n",
+      //  tid, *bb_cost, *timing_cost, *delay_cost, delay_delta_c);
 
 			/* update net cost functions and reset flags. */
 			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
@@ -1769,6 +1773,7 @@ static enum swap_result try_swap1(float t,
 			} // Finish updating clb for all blocks
 
 		} else { /* Move was rejected.  */
+      //printf("swap rejected %d\n", tid);
 
 			/* Reset the net cost function flags first. */
 			for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
@@ -2423,20 +2428,24 @@ static void update_td_cost1(t_pl_blocks_to_be_moved local_blocks_affected) {
 				if (driven_by_moved_block == FALSE) {
 					point_to_point_delay_cost[inet][net_pin] =
 							temp_point_to_point_delay_cost[inet][net_pin];
-					temp_point_to_point_delay_cost[inet][net_pin] = -1;
+          // TAN: do not invalidate temp_var here to avoid data race
+					//temp_point_to_point_delay_cost[inet][net_pin] = -1;
 					point_to_point_timing_cost[inet][net_pin] =
 							temp_point_to_point_timing_cost[inet][net_pin];
-					temp_point_to_point_timing_cost[inet][net_pin] = -1;
+          // TAN: do not invalidate temp_var here to avoid data race
+					//temp_point_to_point_timing_cost[inet][net_pin] = -1;
 				}
 			} else { /* This net is being driven by a moved block, recompute */
 				/* All point to point connections on this net. */
 				for (ipin = 1; ipin <= clb_net[inet].num_sinks; ipin++) {
 					point_to_point_delay_cost[inet][ipin] =
 							temp_point_to_point_delay_cost[inet][ipin];
-					temp_point_to_point_delay_cost[inet][ipin] = -1;
+          // TAN: do not invalidate temp_var here to avoid data race
+					//temp_point_to_point_delay_cost[inet][ipin] = -1;
 					point_to_point_timing_cost[inet][ipin] =
 							temp_point_to_point_timing_cost[inet][ipin];
-					temp_point_to_point_timing_cost[inet][ipin] = -1;
+          // TAN: do not invalidate temp_var here to avoid data race
+					//temp_point_to_point_timing_cost[inet][ipin] = -1;
 				} /* Finished updating the pin */
 			}
 		} /* Finished going through all the pins in the moved block */
@@ -2513,6 +2522,8 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
 
 	delta_timing_cost = 0.;
 	delta_delay_cost = 0.;
+
+  int tid = omp_get_thread_num();
 
 	/* Go through all the blocks moved */
 	for (iblk = 0; iblk < local_blocks_affected.num_moved_blocks; iblk++)
