@@ -23,7 +23,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#define OMP_NUM_THREADS 16
+#define OMP_NUM_THREADS 2
 #define PARALLEL
 
 //
@@ -310,6 +310,7 @@ static int count_connections(void);
 static double get_std_dev(int n, double sum_x_squared, double av_x);
 
 static float recompute_bb_cost(void);
+static float recompute_bb_cost1(void);
 
 static float comp_td_point_to_point_delay(int inet, int ipin);
 
@@ -810,6 +811,7 @@ void try_place(struct s_placer_opts placer_opts,
   omp_set_num_threads(OMP_NUM_THREADS);
   float local_bb_costs[OMP_NUM_THREADS];
   int recompute_timing = 0;
+  int recompute_after_move = 0;
   //clock_t begin, end;
   //begin = clock();
 
@@ -978,8 +980,8 @@ void try_place(struct s_placer_opts placer_opts,
         for (x = lb_x; x <= ub_x; x++) {
           for (y = lb_y; y <= ub_y; y++) {
 
-            if (my_irand(99) < 20)
-              continue;
+            //if (my_irand(99) < 20)
+            //  continue;
 
             for (z = 0; z < grid[x][y].type->capacity; z++) {
               int block_num = grid[x][y].blocks[z];
@@ -1076,8 +1078,31 @@ void try_place(struct s_placer_opts placer_opts,
 
       //moves_since_cost_recompute += move_lim;
       if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
-        new_bb_cost = recompute_bb_cost();
+        recompute_after_move = 1;
+        new_bb_cost = 0.;
+        new_timing_cost = 0.;
+        new_delay_cost = 0.;
+      } else
+        recompute_after_move = 0;
+      moves_since_cost_recompute = 0;
+    }
 
+    #pragma omp barrier
+
+    if (recompute_after_move) {
+      float local_new_bb_cost = recompute_bb_cost1();
+      float local_new_timing_cost, local_new_delay_cost;
+      comp_td_costs(&local_new_timing_cost, &local_new_delay_cost);
+
+      #pragma omp critical
+      {
+      new_bb_cost += local_new_bb_cost;
+      new_timing_cost += local_new_timing_cost;
+      new_delay_cost += local_new_delay_cost;
+      }
+      #pragma omp barrier
+
+      if (tid == 0) {
         if (fabs(new_bb_cost - bb_cost) > bb_cost * ERROR_TOL) {
           vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_bb_cost = %g, old bb_cost = %g\n", 
               new_bb_cost, bb_cost);
@@ -1088,7 +1113,7 @@ void try_place(struct s_placer_opts placer_opts,
         if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
             || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
 
-          comp_td_costs(&new_timing_cost, &new_delay_cost);
+          //comp_td_costs(&new_timing_cost, &new_delay_cost);
 
           if (fabs(new_timing_cost - timing_cost) > timing_cost * ERROR_TOL) {
             vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_timing_cost = %g, old timing_cost = %g\n",
@@ -1109,9 +1134,11 @@ void try_place(struct s_placer_opts placer_opts,
           cost = new_bb_cost;
         }
 
-        moves_since_cost_recompute = 0;
+        //moves_since_cost_recompute = 0;
       }
+    }
 
+    if (tid == 0) {
       tot_iter += num_total_moves;
       success_rat = ((float) success_sum) / num_total_moves;
       if (success_sum == 0) {
@@ -1131,14 +1158,12 @@ void try_place(struct s_placer_opts placer_opts,
       update_t(&t, std_dev, rlim, success_rat, annealing_sched);
 
 #ifndef SPEC
-      critical_path_delay = get_critical_path_delay();
-      vpr_printf(TIO_MESSAGE_INFO, "%9.5f %9.5g %11.6g %11.6g %11.6g %11.6g %8.4f %8.4f %7.4f %7.4f %7.4f %9d %7.4f\n",
-          oldt, av_cost, av_bb_cost, av_timing_cost, av_delay_cost, place_delay_value, 
-          critical_path_delay, success_rat, std_dev, rlim, crit_exponent, tot_iter, t / oldt);
+    critical_path_delay = get_critical_path_delay();
+    vpr_printf(TIO_MESSAGE_INFO, "%9.5f %9.5g %11.6g %11.6g %11.6g %11.6g %8.4f %8.4f %7.4f %7.4f %7.4f %9d %7.4f\n",
+        oldt, av_cost, av_bb_cost, av_timing_cost, av_delay_cost, place_delay_value, 
+        critical_path_delay, success_rat, std_dev, rlim, crit_exponent, tot_iter, t / oldt);
 #endif
 
-      //sprintf(msg, "Cost: %g  BB Cost %g  TD Cost %g  Temperature: %g",
-      //    cost, bb_cost, timing_cost, t);
       update_screen(MINOR, msg, PLACEMENT, FALSE);
       update_rlim(&rlim, success_rat);
 
@@ -1149,11 +1174,6 @@ void try_place(struct s_placer_opts placer_opts,
               - placer_opts.td_place_exp_first)
           + placer_opts.td_place_exp_first;
       }
-#ifdef VERBOSE
-      if (getEchoEnabled()) {
-        print_clb_placement("first_iteration_clb_placement.echo");
-      }
-#endif
     }
 
     // TAN: sync before we move to the next annealing iteration.
@@ -1162,6 +1182,7 @@ void try_place(struct s_placer_opts placer_opts,
   }
 
   free(local_blocks_affected.moved_blocks);
+
   } // end of omp parallel region
 
   //end = clock();
@@ -2612,6 +2633,37 @@ static enum swap_result assess_swap(float delta_c, float t) {
 // TAN: this function seems to compute the bb cost for all nets. It might not
 // make sense to let each thread run this function. Rather, we should dedicate
 // one thread to execute it (or use reduction to locallly parallelize the function)
+static float recompute_bb_cost1(void) {
+
+  /* Recomputes the cost to eliminate roundoff that may have accrued.  *
+   * This routine does as little work as possible to compute this new  *
+   * cost.                                                             */
+
+  int num_threads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+  int segment = (num_nets + num_threads - 1) / num_threads;
+  int lb = tid * segment;
+  int ub = (tid + 1) * segment;
+  if (tid == num_threads - 1)
+    ub = num_nets;
+
+  int inet;
+  float cost;
+
+  cost = 0;
+
+  for (inet = lb; inet < ub; inet++) { /* for each net ... */
+    if (clb_net[inet].is_global == FALSE) { /* Do only if not global. */
+
+      /* Bounding boxes don't have to be recomputed; they're correct. */
+      cost += net_cost[inet];
+    }
+  }
+
+  return (cost);
+}
+
 static float recompute_bb_cost(void) {
 
   /* Recomputes the cost to eliminate roundoff that may have accrued.  *
