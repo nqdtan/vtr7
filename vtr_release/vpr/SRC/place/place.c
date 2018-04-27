@@ -24,7 +24,7 @@
 #include <time.h>
 
 #define OMP_NUM_THREADS 2
-#define PARALLEL
+//#define PARALLEL
 
 //
 //  timer
@@ -652,8 +652,6 @@ void try_place(struct s_placer_opts placer_opts,
 
     for (inner_iter = 0; inner_iter < move_lim; inner_iter++) {
       swap_result = try_swap(t, &cost, &bb_cost, &timing_cost, rlim,
-          old_region_occ_x,
-          old_region_occ_y, 
           placer_opts.place_algorithm, placer_opts.timing_tradeoff,
           inverse_prev_bb_cost, inverse_prev_timing_cost, &delay_cost);
       if (swap_result == ACCEPTED) {
