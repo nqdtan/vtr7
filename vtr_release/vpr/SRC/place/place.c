@@ -19,6 +19,27 @@
 #include "vpr_utils.h"
 #include "place_macro.h"
 #include "omp.h"
+#include <sys/types.h>
+#include <sys/time.h>
+#include <time.h>
+
+#define OMP_NUM_THREADS 2
+//
+//  timer
+//
+double read_timer( )
+{
+    static bool initialized = false;
+    static struct timeval start;
+    struct timeval end;
+    if( !initialized )
+    {
+        gettimeofday( &start, NULL );
+        initialized = true;
+    }
+    gettimeofday( &end, NULL );
+    return (end.tv_sec - start.tv_sec) + 1.0e-6 * (end.tv_usec - start.tv_usec);
+}
 
 /************** Types and defines local to place.c ***************************/
 
@@ -580,8 +601,13 @@ void try_place(struct s_placer_opts placer_opts,
   // TAN: we set the number of threads before entering the loop.
   // TODO: would it be a good idea to change the number of threads
   // during loop execution?
-  omp_set_num_threads(16);
-  float local_bb_costs[16];
+  omp_set_num_threads(OMP_NUM_THREADS);
+  float local_bb_costs[OMP_NUM_THREADS];
+
+  //clock_t begin, end;
+  //begin = clock();
+
+  double simulation_time = read_timer();
 
   // TAN: the hard part is to identify which variables need to be privatized
   // to each thread ... VPR uses a lot of global variables, so it is not
@@ -730,8 +756,8 @@ void try_place(struct s_placer_opts placer_opts,
         for (x = lb_x; x <= ub_x; x++) {
           for (y = lb_y; y <= ub_y; y++) {
 
-            //if (my_irand(99) < 20)
-            //  continue;
+            if (my_irand(99) < 20)
+              continue;
 
             for (z = 0; z < grid[x][y].type->capacity; z++) {
               int block_num = grid[x][y].blocks[z];
@@ -779,6 +805,8 @@ void try_place(struct s_placer_opts placer_opts,
       } // num_subregions
 
       local_bb_costs[tid] = comp_bb_cost1(NORMAL);
+      #pragma omp barrier
+
       //printf("tid %d local_bb_cost %g\n", tid, local_bb_cost);
       if (tid == 0) {
         bb_cost = 0.;
@@ -927,6 +955,11 @@ void try_place(struct s_placer_opts placer_opts,
   free(local_blocks_affected.moved_blocks);
   } // end of omp parallel region
 
+  //end = clock();
+  //printf("Simulated annealing took: %g seconds\n", (float)(end - begin) / CLOCKS_PER_SEC);
+
+  simulation_time = read_timer() - simulation_time;
+  printf("Simulated annealing took: %g seconds\n", simulation_time);
 
   t = 0; /* freeze out */
   av_cost = 0.;
