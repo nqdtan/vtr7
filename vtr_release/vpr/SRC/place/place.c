@@ -732,8 +732,6 @@ void try_place(struct s_placer_opts placer_opts,
             //  continue;
 
             for (z = 0; z < grid[x][y].type->capacity; z++) {
-              num_local_moves++;
-
               int block_num = grid[x][y].blocks[z];
 
               if (block_num == -1)
@@ -742,7 +740,9 @@ void try_place(struct s_placer_opts placer_opts,
               if (block[block_num].isFixed == TRUE)
                 continue;
 
+              num_local_moves++;
               local_num_ts_called++;
+
               swap_result = try_swap1(t,
                 &local_cost, &local_bb_cost, &local_timing_cost,
                 rlim,
