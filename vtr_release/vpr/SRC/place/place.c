@@ -321,6 +321,7 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
                                 t_pl_blocks_to_be_moved local_blocks_affected);
 
 static void comp_td_costs(float *timing_cost, float *connection_delay_sum);
+static void comp_td_costs1(float *timing_cost, float *connection_delay_sum);
 
 static enum swap_result assess_swap(float delta_c, float t);
 
@@ -808,7 +809,7 @@ void try_place(struct s_placer_opts placer_opts,
   // during loop execution?
   omp_set_num_threads(OMP_NUM_THREADS);
   float local_bb_costs[OMP_NUM_THREADS];
-
+  int recompute_timing = 0;
   //clock_t begin, end;
   //begin = clock();
 
@@ -828,8 +829,8 @@ void try_place(struct s_placer_opts placer_opts,
   int num_subregions = 2; 
   int segment_x = (nx + 1 + num_threads - 1) / num_threads;
   int segment_y = (ny + 1 + num_threads - 1) / num_threads;
-  int subsegment_x = (segment_x + num_subregions - 1) / num_subregions;
-  int subsegment_y = (segment_y + num_subregions - 1) / num_subregions;
+  //int subsegment_x = (segment_x + num_subregions - 1) / num_subregions;
+  //int subsegment_y = (segment_y + num_subregions - 1) / num_subregions;
   t_pl_blocks_to_be_moved local_blocks_affected;
 
   local_blocks_affected.moved_blocks = (t_pl_moved_block*)my_calloc(
@@ -837,6 +838,8 @@ void try_place(struct s_placer_opts placer_opts,
   local_blocks_affected.num_moved_blocks = 0;
 
   int *local_ts_nets_to_update = (int *) my_calloc(num_nets, sizeof(int));
+
+  float local_cost, local_bb_cost, local_timing_cost, local_delay_cost;
 
   while (exit_crit(t, cost, annealing_sched) == 0) {
 
@@ -863,9 +866,10 @@ void try_place(struct s_placer_opts placer_opts,
 
         if (outer_crit_iter_count >= placer_opts.recompute_crit_iter
             || placer_opts.inner_loop_recompute_divider != 0) {
-#ifdef VERBOSE
-          vpr_printf(TIO_MESSAGE_INFO, "Outer loop recompute criticalities\n");
-#endif
+          recompute_timing = 1;
+          timing_cost = 0.;
+          delay_cost = 0.;
+
           place_delay_value = delay_cost / num_connections;
 
           if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE)
@@ -877,29 +881,42 @@ void try_place(struct s_placer_opts placer_opts,
           load_timing_graph_net_delays(net_delay);
           do_timing_analysis(slacks, FALSE, FALSE, FALSE);
           load_criticalities(slacks, crit_exponent);
-          /*recompute costs from scratch, based on new criticalities */
-          comp_td_costs(&timing_cost, &delay_cost);
           outer_crit_iter_count = 0;
-        }
-        outer_crit_iter_count++;
+        } else
+          recompute_timing = 0;
 
-        /*at each temperature change we update these values to be used     */
-        /*for normalizing the tradeoff between timing and wirelength (bb)  */
-        inverse_prev_bb_cost = 1 / bb_cost;
-        /*Prevent inverse timing cost from going to infinity */
-        inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
+        outer_crit_iter_count++;
       }
     }
-
     #pragma omp barrier
 
-    float local_cost = cost;
-    float local_bb_cost = bb_cost;
-    float local_delay_cost =  delay_cost;
-    float local_timing_cost = timing_cost;
+    if (recompute_timing == 1) {
+      // recompute costs from scratch, based on new criticalities
+      comp_td_costs1(&local_timing_cost, &local_delay_cost);
+      #pragma omp critical
+      {
+      timing_cost += local_timing_cost;
+      delay_cost += local_delay_cost;
+      }
+
+      #pragma omp barrier
+    }
+
+    if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
+        || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
+      /*at each temperature change we update these values to be used     */
+      /*for normalizing the tradeoff between timing and wirelength (bb)  */
+      inverse_prev_bb_cost = 1 / bb_cost;
+      /*Prevent inverse timing cost from going to infinity */
+      inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
+    }
+
+    local_cost = cost;
+    local_bb_cost = bb_cost;
+    local_delay_cost =  delay_cost;
+    local_timing_cost = timing_cost;
 
     float old_cost = cost;
-    float old_bb_cost = bb_cost;
     float old_delay_cost = delay_cost;
     float old_timing_cost = timing_cost;
 
@@ -1012,7 +1029,6 @@ void try_place(struct s_placer_opts placer_opts,
       local_bb_costs[tid] = comp_bb_cost1(NORMAL);
       #pragma omp barrier
 
-      //printf("tid %d local_bb_cost %g\n", tid, local_bb_cost);
       if (tid == 0) {
         bb_cost = 0.;
         int i;
@@ -1040,16 +1056,11 @@ void try_place(struct s_placer_opts placer_opts,
     num_swap_rejected += local_num_swap_rejected;
 
     cost += local_cost;
-    //bb_cost += local_bb_cost;
     timing_cost += local_timing_cost;
     delay_cost += local_delay_cost;
     moves_since_cost_recompute += local_num_ts_called;
     num_total_moves +=  num_local_moves;
     }
-
-    //printf("[LOCAL COST %d] local_cost=%g, local_bb_cost=%g, local_timing_cost=%g, local_delay_cost=%g\n",
-    //  tid, local_cost, local_bb_cost, local_timing_cost, local_delay_cost);
-
 
     #pragma omp barrier
 
@@ -1060,24 +1071,17 @@ void try_place(struct s_placer_opts placer_opts,
 
     if (tid == 0) {
       cost -= old_cost * num_threads;
-      //bb_cost -= old_bb_cost * num_threads;
       timing_cost -= old_timing_cost * num_threads;
       delay_cost -= old_delay_cost * num_threads;
 
-      //printf("moves: %d, cost=%g, old_cost=%g, bb_cost=%g, old_bb_cost=%g, timing_cost=%g, old_timing_cost=%g, delay_cost=%g, old_delay_cost=%g\n",
-      //  moves_since_cost_recompute, cost, old_cost, bb_cost, old_bb_cost,
-      //  timing_cost, old_timing_cost, delay_cost, old_delay_cost);
-
       //moves_since_cost_recompute += move_lim;
       if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
-        //printf("Recompute ...\n");
         new_bb_cost = recompute_bb_cost();
 
         if (fabs(new_bb_cost - bb_cost) > bb_cost * ERROR_TOL) {
           vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_bb_cost = %g, old bb_cost = %g\n", 
               new_bb_cost, bb_cost);
-          // TAN: hmmm ...
-          //exit(1);
+          exit(1);
         }
         bb_cost = new_bb_cost;
 
@@ -1911,10 +1915,6 @@ static enum swap_result try_swap1(float t,
   if (grid[x_to][y_to].type->capacity > 1) {
     z_to = my_irand(grid[x_to][y_to].type->capacity - 1);
   }
-
-  int tid = omp_get_thread_num();
-  //printf("tid=%d, x_from=%d, y_from=%d, z_from=%d, b_from=%d -- x_to=%d, y_to=%d, z_to=%d\n",
-  //  tid, x_from, y_from, z_from, b_from, x_to, y_to, z_to);
 
   /* Make the switch in order to make computing the new bounding *
    * box simpler.  If the cost increase is too high, switch them *
@@ -2812,14 +2812,10 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
   delta_timing_cost = 0.;
   delta_delay_cost = 0.;
 
-  int tid = omp_get_thread_num();
-
   /* Go through all the blocks moved */
   for (iblk = 0; iblk < local_blocks_affected.num_moved_blocks; iblk++)
   {
     bnum = local_blocks_affected.moved_blocks[iblk].block_num;
-    //printf("[comp_delta_td_cost1] tid=%d, bnum=%d\n",
-    //  omp_get_thread_num(), bnum);
     /* Go through all the pins in the moved block */
     for (iblk_pin = 0; iblk_pin < block[bnum].type->num_pins; iblk_pin++) {
       inet = block[bnum].nets[iblk_pin];
@@ -2956,6 +2952,52 @@ static void comp_delta_td_cost(float *delta_timing, float *delta_delay) {
 // so it makese sense to just let one thread does this
 // Hmmmm when doing check_place, a thread gonna have stall information about
 // blocks managed by other threads
+static void comp_td_costs1(float *timing_cost, float *connection_delay_sum) {
+  /* Computes the cost (from scratch) due to the delays and criticalities  *
+   * on all point to point connections, we define the timing cost of       *
+   * each connection as criticality*delay.                                 */
+
+  int num_threads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+  int segment = (num_nets + num_threads - 1) / num_threads;
+  int lb = tid * segment;
+  int ub = (tid + 1) * segment;
+  if (tid == num_threads - 1)
+    ub = num_nets;
+
+  int inet, ipin;
+  float loc_timing_cost, loc_connection_delay_sum, temp_delay_cost,
+      temp_timing_cost;
+
+  loc_timing_cost = 0.;
+  loc_connection_delay_sum = 0.;
+
+  for (inet = lb; inet < ub; inet++) { /* For each net ... */
+    if (clb_net[inet].is_global == FALSE) { /* Do only if not global. */
+
+      for (ipin = 1; ipin <= clb_net[inet].num_sinks; ipin++) {
+
+        temp_delay_cost = comp_td_point_to_point_delay(inet, ipin);
+        temp_timing_cost = temp_delay_cost * timing_place_crit[inet][ipin];
+
+        loc_connection_delay_sum += temp_delay_cost;
+        point_to_point_delay_cost[inet][ipin] = temp_delay_cost;
+        temp_point_to_point_delay_cost[inet][ipin] = -1; /* Undefined */
+
+        point_to_point_timing_cost[inet][ipin] = temp_timing_cost;
+        temp_point_to_point_timing_cost[inet][ipin] = -1; /* Undefined */
+        loc_timing_cost += temp_timing_cost;
+      }
+    }
+  }
+
+  /* Make sure timing cost does not go above MIN_TIMING_COST. */
+  *timing_cost = loc_timing_cost;
+
+  *connection_delay_sum = loc_connection_delay_sum;
+}
+
 static void comp_td_costs(float *timing_cost, float *connection_delay_sum) {
   /* Computes the cost (from scratch) due to the delays and criticalities  *
    * on all point to point connections, we define the timing cost of       *
