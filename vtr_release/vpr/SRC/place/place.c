@@ -1092,7 +1092,7 @@ void try_place(struct s_placer_opts placer_opts,
     if (recompute_after_move) {
       float local_new_bb_cost = recompute_bb_cost1();
       float local_new_timing_cost, local_new_delay_cost;
-      comp_td_costs(&local_new_timing_cost, &local_new_delay_cost);
+      comp_td_costs1(&local_new_timing_cost, &local_new_delay_cost);
 
       #pragma omp critical
       {
