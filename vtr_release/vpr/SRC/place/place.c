@@ -580,8 +580,8 @@ void try_place(struct s_placer_opts placer_opts,
   // TAN: we set the number of threads before entering the loop.
   // TODO: would it be a good idea to change the number of threads
   // during loop execution?
-  omp_set_num_threads(2);
-  float local_bb_costs[2];
+  omp_set_num_threads(16);
+  float local_bb_costs[16];
 
   // TAN: the hard part is to identify which variables need to be privatized
   // to each thread ... VPR uses a lot of global variables, so it is not
@@ -1738,8 +1738,7 @@ static enum swap_result try_swap1(float t,
       inet = local_ts_nets_to_update[inet_affected];
 
       float net_cost_val = get_net_cost(inet, &ts_bb_coord_new[inet]);
-      if (is_inet_managed_by_tid(inet))
-        temp_net_cost[inet] = net_cost_val;
+      temp_net_cost[inet] = net_cost_val;
       bb_delta_c += net_cost_val - net_cost[inet];
     }
 
@@ -1784,17 +1783,15 @@ static enum swap_result try_swap1(float t,
       for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
         inet = local_ts_nets_to_update[inet_affected];
 
-        if (is_inet_managed_by_tid(inet)) {
-          bb_coords[inet] = ts_bb_coord_new[inet];
-          if (clb_net[inet].num_sinks >= SMALL_NET)
-            bb_num_on_edges[inet] = ts_bb_edge_new[inet];
+        bb_coords[inet] = ts_bb_coord_new[inet];
+        if (clb_net[inet].num_sinks >= SMALL_NET)
+          bb_num_on_edges[inet] = ts_bb_edge_new[inet];
       
-          net_cost[inet] = temp_net_cost[inet];
+        net_cost[inet] = temp_net_cost[inet];
 
-          /* negative temp_net_cost value is acting as a flag. */
-          temp_net_cost[inet] = -1;
-          bb_updated_before[inet] = NOT_UPDATED_YET;
-        }
+        /* negative temp_net_cost value is acting as a flag. */
+        temp_net_cost[inet] = -1;
+        bb_updated_before[inet] = NOT_UPDATED_YET;
       }
 
       /* Update clb data structures since we kept the move. */
