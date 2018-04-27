@@ -29,8 +29,8 @@
 
 /* This defines the error tolerance for floating points variables used in *
  * cost computation. 0.01 means that there is a 1% error tolerance.       */
-//#define ERROR_TOL .01
-#define ERROR_TOL .1
+#define ERROR_TOL .01
+//#define ERROR_TOL .1
 
 /* This defines the maximum number of swap attempts before invoking the   *
  * once-in-a-while placement legality check as well as floating point     *
@@ -238,6 +238,7 @@ static void initial_placement(enum e_pad_loc_type pad_loc_type,
     char *pad_loc_file);
 
 static float comp_bb_cost(enum cost_methods method);
+static float comp_bb_cost1(enum cost_methods method);
 
 static int setup_blocks_affected(int b_from, int x_to, int y_to, int z_to);
 static int setup_blocks_affected1(int b_from, int x_to, int y_to, int z_to,
@@ -580,7 +581,7 @@ void try_place(struct s_placer_opts placer_opts,
   // TODO: would it be a good idea to change the number of threads
   // during loop execution?
   omp_set_num_threads(2);
-
+  float local_bb_costs[2];
 
   // TAN: the hard part is to identify which variables need to be privatized
   // to each thread ... VPR uses a lot of global variables, so it is not
@@ -658,6 +659,7 @@ void try_place(struct s_placer_opts placer_opts,
         inverse_prev_timing_cost = std::min(1 / timing_cost, (float)MAX_INV_TIMING_COST);
       }
     }
+
     #pragma omp barrier
 
     float local_cost = cost;
@@ -742,7 +744,6 @@ void try_place(struct s_placer_opts placer_opts,
 
               num_local_moves++;
               local_num_ts_called++;
-
               swap_result = try_swap1(t,
                 &local_cost, &local_bb_cost, &local_timing_cost,
                 rlim,
@@ -777,6 +778,18 @@ void try_place(struct s_placer_opts placer_opts,
         #pragma omp barrier
       } // num_subregions
 
+      local_bb_costs[tid] = comp_bb_cost1(NORMAL);
+      //printf("tid %d local_bb_cost %g\n", tid, local_bb_cost);
+      if (tid == 0) {
+        bb_cost = 0.;
+        int i;
+        for (i = 0; i < num_threads; i++)
+          bb_cost += local_bb_costs[i];
+      }
+
+      #pragma omp barrier
+      local_bb_cost = bb_cost;
+
     } // num_moves
 
     // TAN: here we update global variables, so must use atomic operations
@@ -794,7 +807,7 @@ void try_place(struct s_placer_opts placer_opts,
     num_swap_rejected += local_num_swap_rejected;
 
     cost += local_cost;
-    bb_cost += local_bb_cost;
+    //bb_cost += local_bb_cost;
     timing_cost += local_timing_cost;
     delay_cost += local_delay_cost;
     moves_since_cost_recompute += local_num_ts_called;
@@ -814,7 +827,7 @@ void try_place(struct s_placer_opts placer_opts,
 
     if (tid == 0) {
       cost -= old_cost * num_threads;
-      bb_cost -= old_bb_cost * num_threads;
+      //bb_cost -= old_bb_cost * num_threads;
       timing_cost -= old_timing_cost * num_threads;
       delay_cost -= old_delay_cost * num_threads;
 
@@ -1570,6 +1583,22 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 
 }
 
+int is_inet_managed_by_tid(int inet) {
+  int num_threads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+  int segment = (num_nets + num_threads - 1) / num_threads;
+  int lb = tid * segment;
+  int ub = (tid + 1) * segment;
+  if (tid == num_threads - 1)
+    ub = num_nets;
+
+  if (lb <= inet && inet < ub)
+    return 1;
+
+  return 0;
+}
+
 // TAN: a new version of try_swap
 // We will use thread index to identify the placement region for a thread
 static enum swap_result try_swap1(float t,
@@ -1708,8 +1737,10 @@ static enum swap_result try_swap1(float t,
     for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
       inet = local_ts_nets_to_update[inet_affected];
 
-      temp_net_cost[inet] = get_net_cost(inet, &ts_bb_coord_new[inet]);
-      bb_delta_c += temp_net_cost[inet] - net_cost[inet];
+      float net_cost_val = get_net_cost(inet, &ts_bb_coord_new[inet]);
+      if (is_inet_managed_by_tid(inet))
+        temp_net_cost[inet] = net_cost_val;
+      bb_delta_c += net_cost_val - net_cost[inet];
     }
 
     if (place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -1753,15 +1784,17 @@ static enum swap_result try_swap1(float t,
       for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
         inet = local_ts_nets_to_update[inet_affected];
 
-        bb_coords[inet] = ts_bb_coord_new[inet];
-        if (clb_net[inet].num_sinks >= SMALL_NET)
-          bb_num_on_edges[inet] = ts_bb_edge_new[inet];
+        if (is_inet_managed_by_tid(inet)) {
+          bb_coords[inet] = ts_bb_coord_new[inet];
+          if (clb_net[inet].num_sinks >= SMALL_NET)
+            bb_num_on_edges[inet] = ts_bb_edge_new[inet];
       
-        net_cost[inet] = temp_net_cost[inet];
+          net_cost[inet] = temp_net_cost[inet];
 
-        /* negative temp_net_cost value is acting as a flag. */
-        temp_net_cost[inet] = -1;
-        bb_updated_before[inet] = NOT_UPDATED_YET;
+          /* negative temp_net_cost value is acting as a flag. */
+          temp_net_cost[inet] = -1;
+          bb_updated_before[inet] = NOT_UPDATED_YET;
+        }
       }
 
       /* Update clb data structures since we kept the move. */
@@ -2721,6 +2754,63 @@ static void comp_td_costs(float *timing_cost, float *connection_delay_sum) {
   *timing_cost = loc_timing_cost;
 
   *connection_delay_sum = loc_connection_delay_sum;
+}
+
+// TAN: this function examines all nets
+static float comp_bb_cost1(enum cost_methods method) {
+
+  /* Finds the cost from scratch.  Done only when the placement   *
+   * has been radically changed (i.e. after initial placement).   *
+   * Otherwise find the cost change incrementally.  If method     *
+   * check is NORMAL, we find bounding boxes that are updateable  *
+   * for the larger nets.  If method is CHECK, all bounding boxes *
+   * are found via the non_updateable_bb routine, to provide a    *
+   * cost which can be used to check the correctness of the       *
+   * other routine.                                               */
+
+  int num_threads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+  int segment = (num_nets + num_threads - 1) / num_threads;
+  int lb = tid * segment;
+  int ub = (tid + 1) * segment;
+  if (tid == num_threads - 1)
+    ub = num_nets;
+
+  int inet;
+  float cost;
+  double expected_wirelength;
+
+  cost = 0;
+  expected_wirelength = 0.0;
+
+  for (inet = lb; inet < ub; inet++) { /* for each net ... */
+
+    if (clb_net[inet].is_global == FALSE) { /* Do only if not global. */
+
+      /* Small nets don't use incremental updating on their bounding boxes, *
+       * so they can use a fast bounding box calculator.                    */
+
+      if (clb_net[inet].num_sinks >= SMALL_NET && method == NORMAL) {
+        get_bb_from_scratch(inet, &bb_coords[inet],
+            &bb_num_on_edges[inet]);
+      } else {
+        get_non_updateable_bb(inet, &bb_coords[inet]);
+      }
+
+      net_cost[inet] = get_net_cost(inet, &bb_coords[inet]);
+      cost += net_cost[inet];
+      if (method == CHECK)
+        expected_wirelength += get_net_wirelength_estimate(inet,
+            &bb_coords[inet]);
+    }
+  }
+
+  if (method == CHECK) {
+    vpr_printf(TIO_MESSAGE_INFO, "\n");
+    vpr_printf(TIO_MESSAGE_INFO, "BB estimate of min-dist (placement) wirelength: %.0f\n", expected_wirelength);
+  }
+  return (cost);
 }
 
 // TAN: this function examines all nets
