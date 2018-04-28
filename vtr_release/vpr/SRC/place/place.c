@@ -23,8 +23,8 @@
 #include <sys/time.h>
 #include <time.h>
 
-#define OMP_NUM_THREADS 2
-//#define PARALLEL
+#define OMP_NUM_THREADS 16
+#define PARALLEL
 
 //
 //  timer
@@ -588,7 +588,7 @@ void try_place(struct s_placer_opts placer_opts,
 //  for (iblk = 0; iblk < num_blocks; iblk++) {
 //    printf("blk=%d: x=%d y=%d z=%d\n", iblk, block[iblk].x, block[iblk].y, block[iblk].z);
 //  }
-
+//
 //  int x, y, z;
 //  for (x = 0; x <= nx + 1; x++) {
 //    for (y = 0; y <= ny + 1; y++) {
@@ -866,11 +866,10 @@ void try_place(struct s_placer_opts placer_opts,
 
         if (outer_crit_iter_count >= placer_opts.recompute_crit_iter
             || placer_opts.inner_loop_recompute_divider != 0) {
+          place_delay_value = delay_cost / num_connections;
           recompute_timing = 1;
           timing_cost = 0.;
           delay_cost = 0.;
-
-          place_delay_value = delay_cost / num_connections;
 
           if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE)
             load_constant_net_delay(net_delay, place_delay_value,
@@ -978,7 +977,7 @@ void try_place(struct s_placer_opts placer_opts,
         for (x = lb_x; x <= ub_x; x++) {
           for (y = lb_y; y <= ub_y; y++) {
 
-            //if (my_irand(99) < 20)
+            //if (my_irand(99) < 10)
             //  continue;
 
             for (z = 0; z < grid[x][y].type->capacity; z++) {
@@ -1887,14 +1886,6 @@ static enum swap_result try_swap1(float t,
   int inet, iblk, bnum, iblk_pin, inet_affected;
   int abort_swap = FALSE;
 
-  // TAN: this needs to be made local as well
-  //t_pl_blocks_to_be_moved local_blocks_affected;
-  //local_blocks_affected.moved_blocks = (t_pl_moved_block*)my_calloc(
-  //    num_blocks, sizeof(t_pl_moved_block));
-  //local_blocks_affected.num_moved_blocks = 0;
-
-  //num_ts_called ++;
-
   /* I'm using negative values of temp_net_cost as a flag, so DO NOT   *
    * use cost functions that can go negative.                          */
 
@@ -1903,28 +1894,11 @@ static enum swap_result try_swap1(float t,
   timing_delta_c = 0;
   delay_delta_c = 0.0;
   
-  /* Pick a random block to be swapped with another random block    */
-  // TAN: make sure that we pick a block that is managed by tid
-  //b_from = my_irand(num_blocks - 1);
   b_from = block_num;
-
-  /* If the pins are fixed we never move them from their initial    *
-   * random locations.  The code below could be made more efficient *
-   * by using the fact that pins appear first in the block list,    *
-   * but this shouldn't cause any significant slowdown and won't be *
-   * broken if I ever change the parser so that the pins aren't     *
-   * necessarily at the start of the block list.                    */
-  //while (block[b_from].isFixed == TRUE) {
-  //  b_from = my_irand(num_blocks - 1);
-  //}
 
   x_from = block[b_from].x;
   y_from = block[b_from].y;
   z_from = block[b_from].z;
-
-  //if (!find_to(x_from, y_from, block[b_from].type, rlim, &x_to,
-  //    &y_to))
-  //  return REJECTED;
 
   if (!find_to1(x_from, y_from, block[b_from].type, rlim, &x_to,
       &y_to, lb_x, ub_x, lb_y, ub_y))
@@ -1943,17 +1917,13 @@ static enum swap_result try_swap1(float t,
    * to be moved - check for carry chains and other placement    *
    * macros.                                                     */
   
-  /* Check whether the from_block is part of a macro first.      f it is, the whole macro has to be moved. Calculate the    *
+  /* Check whether the from_block is part of a macro first.
+   * If it is, the whole macro has to be moved. Calculate the    *
    * x, y, z offsets of the swap to maintain relative placements *
    * of the blocks. Abort the swap if the to_block is part of a  *
    * macro (not supported yet).                                  */
   
-  //abort_swap = find_affected_blocks(b_from, x_to, y_to, z_to);
   abort_swap = find_affected_blocks1(b_from, x_to, y_to, z_to, local_blocks_affected);
-
-  //printf("[BLOCK_AFFECTED] tid=%d local_blocks_affected.num_moved_blocks=%d, local_blocks_affected.moved_blocks.block_num=%d\n",
-  //    tid, local_blocks_affected->num_moved_blocks,
-  //    local_blocks_affected->moved_blocks[0].block_num);
 
   if (abort_swap == FALSE) {
 
@@ -2034,9 +2004,6 @@ static enum swap_result try_swap1(float t,
         // are updated properly when running with multiple threads
         update_td_cost1(*local_blocks_affected);
       }
-      //printf("swap accepted %d\n", tid);
-      //printf("[cost] tid=%d, bb_cost=%g, timing_cost=%g, delay_cost=%g, delay_delta_c=%g\n",
-      //  tid, *bb_cost, *timing_cost, *delay_cost, delay_delta_c);
 
       /* update net cost functions and reset flags. */
       for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
@@ -2078,8 +2045,6 @@ static enum swap_result try_swap1(float t,
       } // Finish updating clb for all blocks
 
     } else { /* Move was rejected.  */
-      //printf("swap rejected %d\n", tid);
-
       /* Reset the net cost function flags first. */
       for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
         inet = local_ts_nets_to_update[inet_affected];
@@ -2099,11 +2064,6 @@ static enum swap_result try_swap1(float t,
 
     /* Resets the num_moved_blocks, but do not free blocks_moved array. Defensive Coding */
     local_blocks_affected->num_moved_blocks = 0;
-
-    // TAN: if we run check_place, it only makes sense to run it with one thread
-    //#pragma omp barrier
-    //if (tid == 0)
-    //  check_place(*bb_cost, *timing_cost, place_algorithm, *delay_cost);
 
     return (keep_switch);
   } else {
