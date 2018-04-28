@@ -977,11 +977,11 @@ void try_place(struct s_placer_opts placer_opts,
         for (x = lb_x; x <= ub_x; x++) {
           for (y = lb_y; y <= ub_y; y++) {
 
-            //if (my_irand(99) < 10)
-            //  continue;
-
             for (z = 0; z < grid[x][y].type->capacity; z++) {
               int block_num = grid[x][y].blocks[z];
+
+              if (my_irand(99) < 10)
+                continue;
 
               if (block_num == -1)
                 continue;
@@ -1025,18 +1025,27 @@ void try_place(struct s_placer_opts placer_opts,
         #pragma omp barrier
       } // num_subregions
 
-      local_bb_costs[tid] = comp_bb_cost1(NORMAL);
-      #pragma omp barrier
-
+      local_bb_cost = comp_bb_cost1(NORMAL);
+      comp_td_costs1(&local_timing_cost, &local_delay_cost);
       if (tid == 0) {
         bb_cost = 0.;
-        int i;
-        for (i = 0; i < num_threads; i++)
-          bb_cost += local_bb_costs[i];
+        timing_cost = 0.;
+        delay_cost = 0.;
+      }
+
+      #pragma omp barrier
+
+      #pragma omp critical
+      {
+      bb_cost += local_bb_cost;
+      timing_cost += local_timing_cost;
+      delay_cost += local_delay_cost;
       }
 
       #pragma omp barrier
       local_bb_cost = bb_cost;
+      local_timing_cost = timing_cost;
+      local_delay_cost = delay_cost;
 
     } // num_moves
 
@@ -1055,8 +1064,8 @@ void try_place(struct s_placer_opts placer_opts,
     num_swap_rejected += local_num_swap_rejected;
 
     cost += local_cost;
-    timing_cost += local_timing_cost;
-    delay_cost += local_delay_cost;
+    //timing_cost += local_timing_cost;
+    //delay_cost += local_delay_cost;
     moves_since_cost_recompute += local_num_ts_called;
     num_total_moves +=  num_local_moves;
     }
@@ -1070,8 +1079,8 @@ void try_place(struct s_placer_opts placer_opts,
 
     if (tid == 0) {
       cost -= old_cost * num_threads;
-      timing_cost -= old_timing_cost * num_threads;
-      delay_cost -= old_delay_cost * num_threads;
+      //timing_cost -= old_timing_cost * num_threads;
+      //delay_cost -= old_delay_cost * num_threads;
 
       //moves_since_cost_recompute += move_lim;
       if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
@@ -1110,8 +1119,6 @@ void try_place(struct s_placer_opts placer_opts,
         if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
             || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
 
-          //comp_td_costs(&new_timing_cost, &new_delay_cost);
-
           if (fabs(new_timing_cost - timing_cost) > timing_cost * ERROR_TOL) {
             vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_timing_cost = %g, old timing_cost = %g\n",
                 new_timing_cost, timing_cost);
@@ -1130,8 +1137,6 @@ void try_place(struct s_placer_opts placer_opts,
         if (placer_opts.place_algorithm == BOUNDING_BOX_PLACE) {
           cost = new_bb_cost;
         }
-
-        //moves_since_cost_recompute = 0;
       }
     }
 
@@ -1469,6 +1474,7 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
   /* ------------------------------------- */
 
   else { /* AUTO_SCHED */
+#ifndef PARALLEL
     if (success_rat > 0.96) {
       *t = (*t) * 0.5;
     } else if (success_rat > 0.8) {
@@ -1478,6 +1484,17 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
     } else {
       *t = (*t) * 0.8;
     }
+#else
+    if (success_rat > 0.96) {
+      *t = (*t) * 0.5;
+    } else if (success_rat > 0.8) {
+      *t = (*t) * 0.8;
+    } else if (success_rat > 0.15 || rlim > 1.) {
+      *t = (*t) * 0.75;
+    } else {
+      *t = (*t) * 0.7;
+    }
+#endif
   }
 }
 
@@ -1967,7 +1984,7 @@ static enum swap_result try_swap1(float t,
       inet = local_ts_nets_to_update[inet_affected];
 
       float net_cost_val = get_net_cost(inet, &ts_bb_coord_new[inet]);
-      temp_net_cost[inet] = net_cost_val;
+      //temp_net_cost[inet] = net_cost_val;
       bb_delta_c += net_cost_val - net_cost[inet];
     }
 
@@ -2002,7 +2019,7 @@ static enum swap_result try_swap1(float t,
 
         // TAN: this is dangerous. Need to make sure that global variables
         // are updated properly when running with multiple threads
-        update_td_cost1(*local_blocks_affected);
+        //update_td_cost1(*local_blocks_affected);
       }
 
       /* update net cost functions and reset flags. */
@@ -2013,7 +2030,7 @@ static enum swap_result try_swap1(float t,
         if (clb_net[inet].num_sinks >= SMALL_NET)
           bb_num_on_edges[inet] = ts_bb_edge_new[inet];
       
-        net_cost[inet] = temp_net_cost[inet];
+        //net_cost[inet] = temp_net_cost[inet];
 
         /* negative temp_net_cost value is acting as a flag. */
         temp_net_cost[inet] = -1;
@@ -2852,27 +2869,41 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
         
         if (driven_by_moved_block == FALSE) {
           temp_delay = comp_td_point_to_point_delay(inet, net_pin);
-          temp_point_to_point_delay_cost[inet][net_pin] = temp_delay;
+          //temp_point_to_point_delay_cost[inet][net_pin] = temp_delay;
 
-          temp_point_to_point_timing_cost[inet][net_pin] =
-            timing_place_crit[inet][net_pin] * temp_delay;
-          delta_timing_cost += temp_point_to_point_timing_cost[inet][net_pin]
-            - point_to_point_timing_cost[inet][net_pin];
-          delta_delay_cost += temp_point_to_point_delay_cost[inet][net_pin]
-              - point_to_point_delay_cost[inet][net_pin];
+          //temp_point_to_point_timing_cost[inet][net_pin] =
+          //  timing_place_crit[inet][net_pin] * temp_delay;
+          float temp_timing_cost = timing_place_crit[inet][net_pin] * temp_delay;
+
+          //delta_timing_cost += temp_point_to_point_timing_cost[inet][net_pin]
+          //  - point_to_point_timing_cost[inet][net_pin];
+          //delta_delay_cost += temp_point_to_point_delay_cost[inet][net_pin]
+          //    - point_to_point_delay_cost[inet][net_pin];
+          delta_timing_cost += temp_timing_cost - 
+                               point_to_point_timing_cost[inet][net_pin];
+          delta_delay_cost += temp_delay -
+                               point_to_point_delay_cost[inet][net_pin];
+
         }
       } else { /* This net is being driven by a moved block, recompute */
         /* All point to point connections on this net. */
         for (ipin = 1; ipin <= clb_net[inet].num_sinks; ipin++) {
           temp_delay = comp_td_point_to_point_delay(inet, ipin);
-          temp_point_to_point_delay_cost[inet][ipin] = temp_delay;
+          //temp_point_to_point_delay_cost[inet][ipin] = temp_delay;
 
-          temp_point_to_point_timing_cost[inet][ipin] =
-            timing_place_crit[inet][ipin] * temp_delay;
-          delta_timing_cost += temp_point_to_point_timing_cost[inet][ipin]
-            - point_to_point_timing_cost[inet][ipin];
-          delta_delay_cost += temp_point_to_point_delay_cost[inet][ipin]
-              - point_to_point_delay_cost[inet][ipin];
+          float temp_timing_cost = timing_place_crit[inet][ipin] * temp_delay;
+
+          //temp_point_to_point_timing_cost[inet][ipin] =
+          //  timing_place_crit[inet][ipin] * temp_delay;
+          //delta_timing_cost += temp_point_to_point_timing_cost[inet][ipin]
+          //  - point_to_point_timing_cost[inet][ipin];
+          //delta_delay_cost += temp_point_to_point_delay_cost[inet][ipin]
+          //    - point_to_point_delay_cost[inet][ipin];
+          delta_timing_cost += temp_timing_cost - 
+                               point_to_point_timing_cost[inet][ipin];
+          delta_delay_cost += temp_delay -
+                               point_to_point_delay_cost[inet][ipin];
+
 
         } /* Finished updating the pin */
       }
