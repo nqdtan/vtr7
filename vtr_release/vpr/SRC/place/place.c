@@ -830,8 +830,8 @@ void try_place(struct s_placer_opts placer_opts,
   int num_threads = omp_get_num_threads();
   // TAN: for now, each thread has 2 subregions
   int num_subregions = 2; 
-  int segment_x = (nx + 1 + num_threads - 1) / num_threads;
-  int segment_y = (ny + 1 + num_threads - 1) / num_threads;
+  int segment_x = (nx + 1) / num_threads;
+  int segment_y = (ny + 1) / num_threads;
   //int subsegment_x = (segment_x + num_subregions - 1) / num_subregions;
   //int subsegment_y = (segment_y + num_subregions - 1) / num_subregions;
   t_pl_blocks_to_be_moved local_blocks_affected;
@@ -841,6 +841,10 @@ void try_place(struct s_placer_opts placer_opts,
   local_blocks_affected.num_moved_blocks = 0;
 
   int *local_ts_nets_to_update = (int *) my_calloc(num_nets, sizeof(int));
+  if (local_ts_nets_to_update == NULL) {
+    printf("failed to allocate memory!\n");
+    exit(1);
+  }
 
   float local_cost, local_bb_cost, local_timing_cost, local_delay_cost;
 
@@ -1837,7 +1841,7 @@ int is_inet_managed_by_tid(int inet) {
   int num_threads = omp_get_num_threads();
   int tid = omp_get_thread_num();
 
-  int segment = (num_nets + num_threads - 1) / num_threads;
+  int segment = (num_nets) / num_threads;
   int lb = tid * segment;
   int ub = (tid + 1) * segment;
   if (tid == num_threads - 1)
@@ -2588,7 +2592,7 @@ static float recompute_bb_cost1(void) {
   int num_threads = omp_get_num_threads();
   int tid = omp_get_thread_num();
 
-  int segment = (num_nets + num_threads - 1) / num_threads;
+  int segment = (num_nets) / num_threads;
   int lb = tid * segment;
   int ub = (tid + 1) * segment;
   if (tid == num_threads - 1)
@@ -2972,7 +2976,7 @@ static void comp_td_costs1(float *timing_cost, float *connection_delay_sum) {
   int num_threads = omp_get_num_threads();
   int tid = omp_get_thread_num();
 
-  int segment = (num_nets + num_threads - 1) / num_threads;
+  int segment = (num_nets) / num_threads;
   int lb = tid * segment;
   int ub = (tid + 1) * segment;
   if (tid == num_threads - 1)
@@ -3062,7 +3066,7 @@ static float comp_bb_cost1(enum cost_methods method) {
   int num_threads = omp_get_num_threads();
   int tid = omp_get_thread_num();
 
-  int segment = (num_nets + num_threads - 1) / num_threads;
+  int segment = (num_nets) / num_threads;
   int lb = tid * segment;
   int ub = (tid + 1) * segment;
   if (tid == num_threads - 1)
