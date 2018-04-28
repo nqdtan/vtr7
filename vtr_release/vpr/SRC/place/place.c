@@ -300,6 +300,8 @@ static float starting_t(float *cost_ptr, float *bb_cost_ptr,
 static void update_t(float *t, float std_dev, float rlim, float success_rat,
     struct s_annealing_sched annealing_sched);
 
+static void update_num_moves(float success_rate, int *num_moves);
+
 static void update_rlim(float *rlim, float success_rat);
 
 static int exit_crit(float t, float cost,
@@ -803,6 +805,7 @@ void try_place(struct s_placer_opts placer_opts,
   // This will replace move_lim for calculating success_rate
   int num_total_moves;
 
+  int num_moves = 2;
   // TAN: we set the number of threads before entering the loop.
   // TODO: would it be a good idea to change the number of threads
   // during loop execution?
@@ -938,7 +941,7 @@ void try_place(struct s_placer_opts placer_opts,
     // this number should be tuned with care
     // TODO: would it make sense to change num_moves during annealing process?
     //
-    int num_moves = 2;
+
     int lb_x, ub_x, lb_y, ub_y;
     for (idx = 0; idx < num_moves; idx++) {
       // TAN: this is where it matters ...
@@ -980,8 +983,8 @@ void try_place(struct s_placer_opts placer_opts,
             for (z = 0; z < grid[x][y].type->capacity; z++) {
               int block_num = grid[x][y].blocks[z];
 
-              if (my_irand(99) < 10)
-                continue;
+              //if (my_irand(99) < 10)
+              //  continue;
 
               if (block_num == -1)
                 continue;
@@ -1095,51 +1098,6 @@ void try_place(struct s_placer_opts placer_opts,
 
     #pragma omp barrier
 
-    if (recompute_after_move) {
-      float local_new_bb_cost = recompute_bb_cost1();
-      float local_new_timing_cost, local_new_delay_cost;
-      comp_td_costs1(&local_new_timing_cost, &local_new_delay_cost);
-
-      #pragma omp critical
-      {
-      new_bb_cost += local_new_bb_cost;
-      new_timing_cost += local_new_timing_cost;
-      new_delay_cost += local_new_delay_cost;
-      }
-      #pragma omp barrier
-
-      if (tid == 0) {
-        if (fabs(new_bb_cost - bb_cost) > bb_cost * ERROR_TOL) {
-          vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_bb_cost = %g, old bb_cost = %g\n", 
-              new_bb_cost, bb_cost);
-          exit(1);
-        }
-        bb_cost = new_bb_cost;
-
-        if (placer_opts.place_algorithm == NET_TIMING_DRIVEN_PLACE
-            || placer_opts.place_algorithm == PATH_TIMING_DRIVEN_PLACE) {
-
-          if (fabs(new_timing_cost - timing_cost) > timing_cost * ERROR_TOL) {
-            vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_timing_cost = %g, old timing_cost = %g\n",
-                new_timing_cost, timing_cost);
-            exit(1);
-          }
-
-          if (fabs(new_delay_cost - delay_cost) > delay_cost * ERROR_TOL) {
-            vpr_printf(TIO_MESSAGE_ERROR, "in try_place: new_delay_cost = %g, old delay_cost = %g\n",
-                new_delay_cost, delay_cost);
-            exit(1);
-          }
-
-          timing_cost = new_timing_cost;
-        }
-
-        if (placer_opts.place_algorithm == BOUNDING_BOX_PLACE) {
-          cost = new_bb_cost;
-        }
-      }
-    }
-
     if (tid == 0) {
       tot_iter += num_total_moves;
       success_rat = ((float) success_sum) / num_total_moves;
@@ -1158,12 +1116,14 @@ void try_place(struct s_placer_opts placer_opts,
 
       oldt = t; /* for finding and printing alpha. */
       update_t(&t, std_dev, rlim, success_rat, annealing_sched);
+      update_num_moves(success_rat, &num_moves);
 
 #ifndef SPEC
     critical_path_delay = get_critical_path_delay();
     vpr_printf(TIO_MESSAGE_INFO, "%9.5f %9.5g %11.6g %11.6g %11.6g %11.6g %8.4f %8.4f %7.4f %7.4f %7.4f %9d %7.4f\n",
         oldt, av_cost, av_bb_cost, av_timing_cost, av_delay_cost, place_delay_value, 
         critical_path_delay, success_rat, std_dev, rlim, crit_exponent, tot_iter, t / oldt);
+    printf("num_moves: %d\n", num_moves);
 #endif
 
       update_screen(MINOR, msg, PLACEMENT, FALSE);
@@ -1496,6 +1456,17 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
     }
 #endif
   }
+}
+
+static void update_num_moves(float success_rat, int *num_moves) {
+  if (success_rat >= 0.7 && success_rat < 1)
+    *num_moves = 4;
+
+  if (success_rat >= 0.4 && success_rat < 0.7)
+    *num_moves = 8;
+
+  if (success_rat < 0.4)
+    *num_moves = *num_moves + 1;
 }
 
 static int exit_crit(float t, float cost,
