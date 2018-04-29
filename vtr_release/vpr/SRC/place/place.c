@@ -23,7 +23,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#define OMP_NUM_THREADS 16
+#define OMP_NUM_THREADS 8
 #define PARALLEL
 
 //
@@ -849,7 +849,7 @@ void try_place(struct s_placer_opts placer_opts,
   float local_cost, local_bb_cost, local_timing_cost, local_delay_cost;
 
   while (exit_crit(t, cost, annealing_sched) == 0) {
-
+    #pragma omp barrier
     // TAN: let thread 0 does timing analysis. Would it be correct?
     if (tid == 0) {
 
@@ -1145,9 +1145,14 @@ void try_place(struct s_placer_opts placer_opts,
     // TAN: sync before we move to the next annealing iteration.
     // Very conservative
     #pragma omp barrier
+
+    //printf("annealing iteration tid: %d, temp: %g, cost: %g, condition: %d\n",
+    //  tid, t, cost, exit_crit(t, cost, annealing_sched));
+
   }
 
   free(local_blocks_affected.moved_blocks);
+  //printf("tid %d done\n", tid);
 
   } // end of omp parallel region
 
@@ -1471,6 +1476,10 @@ static void update_num_moves(float success_rat, int *num_moves) {
 
   if (success_rat < 0.4)
     *num_moves = *num_moves + 1;
+
+  // TAN: Cap at 20 ...
+  if (*num_moves > 20)
+    *num_moves = 20;
 }
 
 static int exit_crit(float t, float cost,
