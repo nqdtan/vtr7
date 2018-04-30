@@ -23,7 +23,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#define OMP_NUM_THREADS 8
+#define OMP_NUM_THREADS 16
 #define PARALLEL
 
 //
@@ -796,6 +796,11 @@ void try_place(struct s_placer_opts placer_opts,
       print_clb_placement("first_iteration_clb_placement.echo");
     }
 #endif
+
+    if (cost < 0) {
+      printf("impossible! cost %g\n", cost);
+    }
+
   }
 
   simulation_time = read_timer() - simulation_time;
@@ -1056,6 +1061,8 @@ void try_place(struct s_placer_opts placer_opts,
 
     } // num_moves
 
+    //printf("examine tid %d local_cost %g, old_cost %g\n", tid, local_cost, old_cost);
+
     // TAN: here we update global variables, so must use atomic operations
     #pragma omp critical
     {
@@ -1085,7 +1092,8 @@ void try_place(struct s_placer_opts placer_opts,
      * you get when you recompute from scratch.                       */
 
     if (tid == 0) {
-      cost -= old_cost * num_threads;
+      cost = (cost - old_cost) / num_threads;
+      //printf("final cost %g\n", cost);
       //timing_cost -= old_timing_cost * num_threads;
       //delay_cost -= old_delay_cost * num_threads;
 
@@ -1145,6 +1153,10 @@ void try_place(struct s_placer_opts placer_opts,
     // TAN: sync before we move to the next annealing iteration.
     // Very conservative
     #pragma omp barrier
+
+    //if (cost < 0) {
+    //  printf("impossible! tid %d cost %g\n", tid, cost);
+    //}
 
     //printf("annealing iteration tid: %d, temp: %g, cost: %g, condition: %d\n",
     //  tid, t, cost, exit_crit(t, cost, annealing_sched));
@@ -1457,21 +1469,21 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
     if (success_rat > 0.96) {
       *t = (*t) * 0.5;
     } else if (success_rat > 0.8) {
-      *t = (*t) * 0.8;
-    } else if (success_rat > 0.15 || rlim > 1.) {
-      *t = (*t) * 0.75;
-    } else {
       *t = (*t) * 0.7;
+    } else if (success_rat > 0.2 || rlim > 1.) {
+      *t = (*t) * 0.8;
+    } else {
+      *t = (*t) * 0.8;
     }
 #endif
   }
 }
 
 static void update_num_moves(float success_rat, int *num_moves) {
-  if (success_rat >= 0.7 && success_rat < 1)
+  if (success_rat >= 0.5 && success_rat < 1)
     *num_moves = 4;
 
-  if (success_rat >= 0.4 && success_rat < 0.7)
+  if (success_rat >= 0.4 && success_rat < 0.5)
     *num_moves = 8;
 
   if (success_rat < 0.4)
