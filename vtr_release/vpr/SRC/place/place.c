@@ -278,7 +278,8 @@ static enum swap_result try_swap1(float t, float *cost, float *bb_cost, float *t
     float *delay_cost,
     t_pl_blocks_to_be_moved *local_blocks_affected,
     int *local_ts_nets_to_update,
-    int block_num, int lb_x, int ub_x, int lb_y, int ub_y);
+    int block_num, int lb_x, int ub_x, int lb_y, int ub_y,
+    unsigned int *local_current_random);
 
 static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *timing_cost,
     float rlim,
@@ -331,7 +332,8 @@ static enum swap_result assess_swap(float delta_c, float t);
 static boolean find_to(int x_from, int y_from, t_type_ptr type, float rlim, int *x_to, int *y_to);
 
 static boolean find_to1(int x_from, int y_from, t_type_ptr type, float rlim,
-  int *x_to, int *y_to, int lb_x, int ub_x, int lb_y, int ub_y);
+  int *x_to, int *y_to, int lb_x, int ub_x, int lb_y, int ub_y,
+  unsigned int *local_current_random);
 
 
 static void get_non_updateable_bb(int inet, struct s_bb *bb_coord_new);
@@ -830,6 +832,9 @@ void try_place(struct s_placer_opts placer_opts,
   {
   int tid = omp_get_thread_num();
 
+  unsigned int local_current_random = 0;
+  my_srandom1(&local_current_random);
+
   int x, y, z;
   int s_idx;
   int num_threads = omp_get_num_threads();
@@ -1010,7 +1015,7 @@ void try_place(struct s_placer_opts placer_opts,
                 inverse_prev_bb_cost, inverse_prev_timing_cost, &local_delay_cost,
                 &local_blocks_affected,
                 local_ts_nets_to_update,
-                block_num, lb_x, ub_x, lb_y, ub_y);
+                block_num, lb_x, ub_x, lb_y, ub_y, &local_current_random);
 
               if (swap_result == ACCEPTED) {
                 /* Move was accepted.  Update statistics that are useful for the annealing schedule. */
@@ -1035,30 +1040,29 @@ void try_place(struct s_placer_opts placer_opts,
 
         // TAN: sync before moving to the next iteration to ensure no swap conflict
         #pragma omp barrier
+        local_bb_cost = comp_bb_cost1(NORMAL);
+        comp_td_costs1(&local_timing_cost, &local_delay_cost);
+        if (tid == 0) {
+          bb_cost = 0.;
+          timing_cost = 0.;
+          delay_cost = 0.;
+        }
+
+        #pragma omp barrier
+
+        #pragma omp critical
+        {
+        bb_cost += local_bb_cost;
+        timing_cost += local_timing_cost;
+        delay_cost += local_delay_cost;
+        }
+
+        #pragma omp barrier
+        local_bb_cost = bb_cost;
+        local_timing_cost = timing_cost;
+        local_delay_cost = delay_cost;
+
       } // num_subregions
-
-      local_bb_cost = comp_bb_cost1(NORMAL);
-      comp_td_costs1(&local_timing_cost, &local_delay_cost);
-      if (tid == 0) {
-        bb_cost = 0.;
-        timing_cost = 0.;
-        delay_cost = 0.;
-      }
-
-      #pragma omp barrier
-
-      #pragma omp critical
-      {
-      bb_cost += local_bb_cost;
-      timing_cost += local_timing_cost;
-      delay_cost += local_delay_cost;
-      }
-
-      #pragma omp barrier
-      local_bb_cost = bb_cost;
-      local_timing_cost = timing_cost;
-      local_delay_cost = delay_cost;
-
     } // num_moves
 
     //printf("examine tid %d local_cost %g, old_cost %g\n", tid, local_cost, old_cost);
@@ -1492,6 +1496,8 @@ static void update_num_moves(float success_rat, int *num_moves) {
   // TAN: Cap at 20 ...
   if (*num_moves > 20)
     *num_moves = 20;
+
+  //*num_moves = 200;
 }
 
 static int exit_crit(float t, float cost,
@@ -1884,7 +1890,8 @@ static enum swap_result try_swap1(float t,
     float *delay_cost,
     t_pl_blocks_to_be_moved *local_blocks_affected,
     int *local_ts_nets_to_update,
-    int block_num, int lb_x, int ub_x, int lb_y, int ub_y) {
+    int block_num, int lb_x, int ub_x, int lb_y, int ub_y,
+    unsigned int *local_current_random) {
 
   /* Picks some block and moves it to another spot.  If this spot is   *
    * occupied, switch the blocks.  Assess the change in cost function  *
@@ -1914,12 +1921,12 @@ static enum swap_result try_swap1(float t,
   z_from = block[b_from].z;
 
   if (!find_to1(x_from, y_from, block[b_from].type, rlim, &x_to,
-      &y_to, lb_x, ub_x, lb_y, ub_y))
+      &y_to, lb_x, ub_x, lb_y, ub_y, local_current_random))
     return REJECTED;
 
   z_to = 0;
   if (grid[x_to][y_to].type->capacity > 1) {
-    z_to = my_irand(grid[x_to][y_to].type->capacity - 1);
+    z_to = my_irand1(grid[x_to][y_to].type->capacity - 1, local_current_random);
   }
 
   /* Make the switch in order to make computing the new bounding *
@@ -2405,7 +2412,7 @@ static int find_affected_nets(int *nets_to_update) {
 // TAN: we need to modify this function so that the return block is managed by
 // a corresponding tid. Or just changing rlim is enough?
 static boolean find_to1(int x_from, int y_from, t_type_ptr type, float rlim, int *x_to, int *y_to,
-   int lb_x, int ub_x, int lb_y ,int ub_y) {
+   int lb_x, int ub_x, int lb_y ,int ub_y, unsigned int *local_current_random) {
 
   /* Returns the point to which I want to swap, properly range limited. 
    * rlim must always be between 1 and nx (inclusive) for this routine  
@@ -2458,13 +2465,13 @@ static boolean find_to1(int x_from, int y_from, t_type_ptr type, float rlim, int
     if(nx / 4 < rlx || 
       ny / 4 < rly ||
       num_legal_pos[block_index] < active_area) {
-      ipos = my_irand(num_legal_pos[block_index] - 1);
+      ipos = my_irand1(num_legal_pos[block_index] - 1, local_current_random);
       *x_to = legal_pos[block_index][ipos].x;
       *y_to = legal_pos[block_index][ipos].y;
     } else {
-      x_rel = my_irand(std::max(0, max_x - min_x));
+      x_rel = my_irand1(std::max(0, max_x - min_x), local_current_random);
       *x_to = min_x + x_rel;
-      y_rel = my_irand(std::max(0, max_y - min_y));
+      y_rel = my_irand1(std::max(0, max_y - min_y), local_current_random);
       *y_to = min_y + y_rel;
       *y_to = (*y_to) - grid[*x_to][*y_to].offset; /* align it */
     }

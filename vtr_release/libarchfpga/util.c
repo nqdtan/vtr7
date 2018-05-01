@@ -735,6 +735,38 @@ int my_irand(int imax) {
 	return (ival);
 }
 
+void my_srandom1(unsigned *local_current_random) {
+	*local_current_random = current_random;
+}
+
+int my_irand1(int imax, unsigned *local_current_random) {
+
+	/* Creates a random integer between 0 and imax, inclusive.  i.e. [0..imax] */
+
+	int ival;
+
+	/* current_random = (current_random * IA + IC) % IM; */
+	*local_current_random = *local_current_random * IA + IC; /* Use overflow to wrap */
+	ival = *local_current_random & (IM - 1); /* Modulus */
+	ival = (int) ((float) ival * (float) (imax + 0.999) / (float) IM);
+
+#ifdef CHECK_RAND
+	if ((ival < 0) || (ival > imax)) {
+		if (ival == imax + 1) {
+			/* Due to random floating point rounding, sometimes above calculation gives number greater than ival by 1 */
+			ival = imax;
+		} else {
+			vpr_printf(TIO_MESSAGE_ERROR,
+					"Bad value in my_irand, imax = %d  ival = %d\n", imax,
+					ival);
+			exit(1);
+		}
+	}
+#endif
+
+	return (ival);
+}
+
 float my_frand(void) {
 
 	/* Creates a random float between 0 and 1.  i.e. [0..1).        */

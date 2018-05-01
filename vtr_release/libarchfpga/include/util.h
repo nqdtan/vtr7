@@ -128,6 +128,10 @@ boolean file_exists(const char * filename);
 /*********************** Portable random number generators *******************/
 void my_srandom(int seed);
 int my_irand(int imax);
+
+void my_srandom1(unsigned int *local_current_random);
+int my_irand1(int imax, unsigned int *local_current_random);
+
 float my_frand(void);
 
 typedef unsigned char (*messagelogger)( TIO_MessageMode_t messageMode,
