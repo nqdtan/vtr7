@@ -133,6 +133,7 @@ void my_srandom1(unsigned int *local_current_random);
 int my_irand1(int imax, unsigned int *local_current_random);
 
 float my_frand(void);
+float my_frand1(unsigned int *local_current_random);
 
 typedef unsigned char (*messagelogger)( TIO_MessageMode_t messageMode,
                                    char* pszMessage,

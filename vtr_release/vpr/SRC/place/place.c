@@ -328,6 +328,8 @@ static void comp_td_costs(float *timing_cost, float *connection_delay_sum);
 static void comp_td_costs1(float *timing_cost, float *connection_delay_sum);
 
 static enum swap_result assess_swap(float delta_c, float t);
+static enum swap_result assess_swap1(float delta_c, float t,
+                                    unsigned int *local_current_random);
 
 static boolean find_to(int x_from, int y_from, t_type_ptr type, float rlim, int *x_to, int *y_to);
 
@@ -2007,7 +2009,7 @@ static enum swap_result try_swap1(float t,
     }
 
     /* 1 -> move accepted, 0 -> rejected. */
-    keep_switch = assess_swap(delta_c, t);
+    keep_switch = assess_swap1(delta_c, t, local_current_random);
     
     if (keep_switch == ACCEPTED) {
       *cost = *cost + delta_c;
@@ -2576,6 +2578,36 @@ static boolean find_to(int x_from, int y_from, t_type_ptr type, float rlim, int 
 #endif
   assert(type == grid[*x_to][*y_to].type);
   return TRUE;
+}
+
+static enum swap_result assess_swap1(float delta_c, float t, unsigned int *local_current_random) {
+
+  /* Returns: 1 -> move accepted, 0 -> rejected. */
+
+  enum swap_result accept;
+  float prob_fac, fnum;
+
+  if (delta_c <= 0) {
+
+#ifdef SPEC     /* Reduce variation in final solution due to round off */
+    fnum = my_frand();
+#endif
+
+    accept = ACCEPTED;
+    return (accept);
+  }
+
+  if (t == 0.)
+    return (REJECTED);
+
+  fnum = my_frand1(local_current_random);
+  prob_fac = exp(-delta_c / t);
+  if (prob_fac > fnum) {
+    accept = ACCEPTED;
+  } else {
+    accept = REJECTED;
+  }
+  return (accept);
 }
 
 static enum swap_result assess_swap(float delta_c, float t) {

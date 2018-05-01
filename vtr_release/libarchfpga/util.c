@@ -789,6 +789,28 @@ float my_frand(void) {
 	return (fval);
 }
 
+float my_frand1(unsigned int *local_current_random) {
+
+	/* Creates a random float between 0 and 1.  i.e. [0..1).        */
+
+	float fval;
+	int ival;
+
+	*local_current_random = *local_current_random * IA + IC; /* Use overflow to wrap */
+	ival = current_random & (IM - 1); /* Modulus */
+	fval = (float) ival / (float) IM;
+
+#ifdef CHECK_RAND
+	if ((fval < 0) || (fval > 1.)) {
+		vpr_printf(TIO_MESSAGE_ERROR, "Bad value in my_frand, fval = %g\n",
+				fval);
+		exit(1);
+	}
+#endif
+
+	return (fval);
+}
+
 boolean file_exists(const char * filename) {
 	FILE * file;
 
