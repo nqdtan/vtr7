@@ -1021,9 +1021,6 @@ void try_place(struct s_placer_opts placer_opts,
             for (z = 0; z < grid[x][y].type->capacity; z++) {
               int block_num = grid[x][y].blocks[z];
 
-              //if (my_irand(99) < 10)
-              //  continue;
-
               if (block_num == -1)
                 continue;
 
@@ -1060,15 +1057,9 @@ void try_place(struct s_placer_opts placer_opts,
           }
         }
 
-        //printf("[tid %d] local_num_moves %d, local_bb_cost=%g\n", tid, num_local_moves, local_bb_cost);
-
-        // TODO: perform timing analysis here as in the original code
-
         // TAN: sync before moving to the next iteration to ensure no swap conflict
         #pragma omp barrier
         local_bb_cost = comp_bb_cost1(NORMAL);
-        //printf("[tid %d] new_local_bb_cost=%g\n", tid, local_bb_cost);
-
         comp_td_costs1(&local_timing_cost, &local_delay_cost);
         if (tid == 0) {
           bb_cost = 0.;
@@ -1111,8 +1102,6 @@ void try_place(struct s_placer_opts placer_opts,
     num_swap_rejected += local_num_swap_rejected;
 
     cost += local_cost;
-    //timing_cost += local_timing_cost;
-    //delay_cost += local_delay_cost;
     moves_since_cost_recompute += local_num_ts_called;
     num_total_moves +=  num_local_moves;
     }
@@ -1126,11 +1115,7 @@ void try_place(struct s_placer_opts placer_opts,
 
     if (tid == 0) {
       cost = (cost - old_cost) / num_threads;
-      //printf("final cost %g\n", cost);
-      //timing_cost -= old_timing_cost * num_threads;
-      //delay_cost -= old_delay_cost * num_threads;
 
-      //moves_since_cost_recompute += move_lim;
       if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
         recompute_after_move = 1;
         new_bb_cost = 0.;
@@ -1526,7 +1511,7 @@ static void update_num_moves(float success_rat, int *num_moves) {
   if (*num_moves > 20)
     *num_moves = 20;
 
-  //*num_moves = 200;
+  *num_moves = 10;
 }
 
 static int exit_crit(float t, float cost,
@@ -1995,7 +1980,8 @@ static enum swap_result try_swap1(float t,
         if (clb_net[inet].is_global)
           continue;
       
-        if (clb_net[inet].node_block[0] != bnum)
+        // TAN: WIP
+        if (block[clb_net[inet].node_block[0]].assigned_tid != omp_get_thread_num())
           continue;
 
         if (clb_net[inet].num_sinks < SMALL_NET) {
@@ -2040,10 +2026,7 @@ static enum swap_result try_swap1(float t,
 
     /* 1 -> move accepted, 0 -> rejected. */
     keep_switch = assess_swap1(delta_c, t, local_current_random);
-
-    //printf("[tid %d] assess_swap %d %d %d %d --> %d %d %d; %g %g\n",
-    //  omp_get_thread_num(), keep_switch, x_from, y_from, z_from, x_to, y_to, z_to, bb_delta_c, timing_delta_c);
-   
+  
     if (keep_switch == ACCEPTED) {
       *cost = *cost + delta_c;
       *bb_cost = *bb_cost + bb_delta_c;
@@ -2393,7 +2376,8 @@ static int find_affected_nets1(int *nets_to_update,
       if (clb_net[inet].is_global)
         continue;
 
-      if (clb_net[inet].node_block[0] != bnum)
+      // TAN: WIP
+      if (block[clb_net[inet].node_block[0]].assigned_tid != omp_get_thread_num())
         continue;
 
       if (temp_net_cost[inet] < 0.) { 
@@ -2864,7 +2848,7 @@ static void update_td_cost1(t_pl_blocks_to_be_moved local_blocks_affected) {
         continue;
 
       // TAN: WIP
-      if (clb_net[inet].node_block[0] != bnum)
+      if (block[clb_net[inet].node_block[0]].assigned_tid != omp_get_thread_num())
         continue;
 
       net_pin = net_pin_index[bnum][iblk_pin];
@@ -2991,7 +2975,7 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
         continue;
 
       // TAN: WIP
-      if (clb_net[inet].node_block[0] != bnum)
+      if (block[clb_net[inet].node_block[0]].assigned_tid != omp_get_thread_num())
         continue;
 
       net_pin = net_pin_index[bnum][iblk_pin];
