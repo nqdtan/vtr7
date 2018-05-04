@@ -564,6 +564,11 @@ struct s_block {
 	int y;
 	int z;
 
+  int old_x;
+  int old_y;
+  int old_z;
+  int assigned_tid;
+
 	t_pb *pb;
 
 	boolean isFixed;
