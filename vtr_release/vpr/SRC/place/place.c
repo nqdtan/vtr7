@@ -23,7 +23,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#define OMP_NUM_THREADS 16
+#define OMP_NUM_THREADS 2
 #define PARALLEL
 
 //
@@ -316,6 +316,7 @@ static float recompute_bb_cost(void);
 static float recompute_bb_cost1(void);
 
 static float comp_td_point_to_point_delay(int inet, int ipin);
+static float comp_td_point_to_point_delay1(int inet, int ipin);
 
 static void update_td_cost(void);
 static void update_td_cost1(t_pl_blocks_to_be_moved local_blocks_affected);
@@ -339,10 +340,13 @@ static boolean find_to1(int x_from, int y_from, t_type_ptr type, float rlim,
 
 
 static void get_non_updateable_bb(int inet, struct s_bb *bb_coord_new);
+static void get_non_updateable_bb1(int inet, struct s_bb *bb_coord_new);
 
 static void update_bb(int inet, struct s_bb *bb_coord_new,
     struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew);
-    
+ static void update_bb1(int inet, struct s_bb *bb_coord_new,
+    struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew);
+   
 static int find_affected_nets(int *nets_to_update);
 static int find_affected_nets1(int *nets_to_update,
                               t_pl_blocks_to_be_moved local_blocks_affected);
@@ -350,6 +354,8 @@ static int find_affected_nets1(int *nets_to_update,
 static float get_net_cost(int inet, struct s_bb *bb_ptr);
 
 static void get_bb_from_scratch(int inet, struct s_bb *coords,
+    struct s_bb *num_on_edges);
+static void get_bb_from_scratch1(int inet, struct s_bb *coords,
     struct s_bb *num_on_edges);
 
 static double get_net_wirelength_estimate(int inet, struct s_bb *bbptr);
@@ -825,6 +831,16 @@ void try_place(struct s_placer_opts placer_opts,
   //clock_t begin, end;
   //begin = clock();
 
+  int i;
+  int **local_ts_nets_to_update = (int **)malloc(OMP_NUM_THREADS * sizeof(int *));
+  for (i = 0; i < OMP_NUM_THREADS; i++) {
+    local_ts_nets_to_update[i] = (int *) my_calloc(num_nets, sizeof(int));
+    if (local_ts_nets_to_update[i] == NULL) {
+      printf("failed to allocate memory!\n");
+      exit(1);
+    }
+  }
+
   double simulation_time = read_timer();
 
   // TAN: the hard part is to identify which variables need to be privatized
@@ -837,6 +853,7 @@ void try_place(struct s_placer_opts placer_opts,
   unsigned int local_current_random = 0;
   my_srandom1(&local_current_random);
 
+  printf("[%d] random seed %d\n", tid, local_current_random);
   int x, y, z;
   int s_idx;
   int num_threads = omp_get_num_threads();
@@ -851,12 +868,6 @@ void try_place(struct s_placer_opts placer_opts,
   local_blocks_affected.moved_blocks = (t_pl_moved_block*)my_calloc(
       num_blocks, sizeof(t_pl_moved_block));
   local_blocks_affected.num_moved_blocks = 0;
-
-  int *local_ts_nets_to_update = (int *) my_calloc(num_nets, sizeof(int));
-  if (local_ts_nets_to_update == NULL) {
-    printf("failed to allocate memory!\n");
-    exit(1);
-  }
 
   float local_cost, local_bb_cost, local_timing_cost, local_delay_cost;
 
@@ -990,9 +1001,20 @@ void try_place(struct s_placer_opts placer_opts,
             ub_x = nx + 1;
         }
 
+        int k;
+        for (k = 0; k < num_blocks; k++) {
+          if (block[k].x >= lb_x && block[k].x <= ub_x &&
+              block[k].y >= lb_y && block[k].y <= ub_y)
+            block[k].assigned_tid = tid;
+          block[k].old_x = block[k].x;
+          block[k].old_y = block[k].y;
+          block[k].old_z = block[k].z;
+        }
+
+        #pragma omp barrier
         //printf("[s_idx=%d] CHECK tid=%d, lb_x=%d, ub_x=%d, lb_y=%d, ub_y=%d\n",
         //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
-
+        //printf("[tid %d] old_local_bb_cost=%g\n", tid, local_bb_cost);
         for (x = lb_x; x <= ub_x; x++) {
           for (y = lb_y; y <= ub_y; y++) {
 
@@ -1016,7 +1038,7 @@ void try_place(struct s_placer_opts placer_opts,
                 placer_opts.place_algorithm, placer_opts.timing_tradeoff,
                 inverse_prev_bb_cost, inverse_prev_timing_cost, &local_delay_cost,
                 &local_blocks_affected,
-                local_ts_nets_to_update,
+                local_ts_nets_to_update[tid],
                 block_num, lb_x, ub_x, lb_y, ub_y, &local_current_random);
 
               if (swap_result == ACCEPTED) {
@@ -1038,11 +1060,15 @@ void try_place(struct s_placer_opts placer_opts,
           }
         }
 
+        //printf("[tid %d] local_num_moves %d, local_bb_cost=%g\n", tid, num_local_moves, local_bb_cost);
+
         // TODO: perform timing analysis here as in the original code
 
         // TAN: sync before moving to the next iteration to ensure no swap conflict
         #pragma omp barrier
         local_bb_cost = comp_bb_cost1(NORMAL);
+        //printf("[tid %d] new_local_bb_cost=%g\n", tid, local_bb_cost);
+
         comp_td_costs1(&local_timing_cost, &local_delay_cost);
         if (tid == 0) {
           bb_cost = 0.;
@@ -1066,6 +1092,7 @@ void try_place(struct s_placer_opts placer_opts,
 
       } // num_subregions
     } // num_moves
+
 
     //printf("examine tid %d local_cost %g, old_cost %g\n", tid, local_cost, old_cost);
 
@@ -1968,12 +1995,15 @@ static enum swap_result try_swap1(float t,
         if (clb_net[inet].is_global)
           continue;
       
+        if (clb_net[inet].node_block[0] != bnum)
+          continue;
+
         if (clb_net[inet].num_sinks < SMALL_NET) {
           if(bb_updated_before[inet] == NOT_UPDATED_YET)
             /* Brute force bounding box recomputation, once only for speed. */
-            get_non_updateable_bb(inet, &ts_bb_coord_new[inet]);
+            get_non_updateable_bb1(inet, &ts_bb_coord_new[inet]);
         } else {
-          update_bb(inet, &ts_bb_coord_new[inet],
+          update_bb1(inet, &ts_bb_coord_new[inet],
               &ts_bb_edge_new[inet], 
               local_blocks_affected->moved_blocks[iblk].xold, 
               local_blocks_affected->moved_blocks[iblk].yold + block[bnum].type->pin_height[iblk_pin],
@@ -2010,7 +2040,10 @@ static enum swap_result try_swap1(float t,
 
     /* 1 -> move accepted, 0 -> rejected. */
     keep_switch = assess_swap1(delta_c, t, local_current_random);
-    
+
+    //printf("[tid %d] assess_swap %d %d %d %d --> %d %d %d; %g %g\n",
+    //  omp_get_thread_num(), keep_switch, x_from, y_from, z_from, x_to, y_to, z_to, bb_delta_c, timing_delta_c);
+   
     if (keep_switch == ACCEPTED) {
       *cost = *cost + delta_c;
       *bb_cost = *bb_cost + bb_delta_c;
@@ -2359,7 +2392,10 @@ static int find_affected_nets1(int *nets_to_update,
         continue;
       if (clb_net[inet].is_global)
         continue;
-      
+
+      if (clb_net[inet].node_block[0] != bnum)
+        continue;
+
       if (temp_net_cost[inet] < 0.) { 
         /* Net not marked yet. */
         nets_to_update[num_affected_nets] = inet;
@@ -2590,7 +2626,7 @@ static enum swap_result assess_swap1(float delta_c, float t, unsigned int *local
   if (delta_c <= 0) {
 
 #ifdef SPEC     /* Reduce variation in final solution due to round off */
-    fnum = my_frand();
+    fnum = my_frand1(local_current_random);
 #endif
 
     accept = ACCEPTED;
@@ -2696,6 +2732,68 @@ static float recompute_bb_cost(void) {
   return (cost);
 }
 
+static float comp_td_point_to_point_delay1(int inet, int ipin) {
+
+  /*returns the delay of one point to point connection */
+
+  int source_block, sink_block;
+  int delta_x, delta_y;
+  t_type_ptr source_type, sink_type;
+  float delay_source_to_sink;
+
+  delay_source_to_sink = 0.;
+
+  source_block = clb_net[inet].node_block[0];
+  source_type = block[source_block].type;
+
+  sink_block = clb_net[inet].node_block[ipin];
+  sink_type = block[sink_block].type;
+
+  int source_x = block[source_block].x;
+  int source_y = block[source_block].y;
+  int sink_x = block[sink_block].x;
+  int sink_y = block[sink_block].y;
+
+  if (block[source_block].assigned_tid != omp_get_thread_num()) {
+    source_x = block[source_block].old_x;
+    source_y = block[source_block].old_y;
+  }
+
+  if (block[sink_block].assigned_tid != omp_get_thread_num()) {
+    sink_x = block[sink_block].old_x;
+    sink_y = block[sink_block].old_y;
+  }
+
+  assert(source_type != NULL);
+  assert(sink_type != NULL);
+
+  delta_x = abs(sink_x - source_x);
+  delta_y = abs(sink_y - source_y);
+
+  /* TODO low priority: Could be merged into one look-up table */
+  /* Note: This heuristic is terrible on Quality of Results.  
+   * A much better heuristic is to create a more comprehensive lookup table but
+   * it's too late in the release cycle to do this.  Pushing until the next release */
+  if (source_type == IO_TYPE) {
+    if (sink_type == IO_TYPE)
+      delay_source_to_sink = delta_io_to_io[delta_x][delta_y];
+    else
+      delay_source_to_sink = delta_io_to_clb[delta_x][delta_y];
+  } else {
+    if (sink_type == IO_TYPE)
+      delay_source_to_sink = delta_clb_to_io[delta_x][delta_y];
+    else
+      delay_source_to_sink = delta_clb_to_clb[delta_x][delta_y];
+  }
+  if (delay_source_to_sink < 0) {
+    vpr_printf(TIO_MESSAGE_ERROR, "in comp_td_point_to_point_delay: Bad delay_source_to_sink value delta(%d, %d) delay of %g\n", delta_x, delta_y, delay_source_to_sink);
+    vpr_printf(TIO_MESSAGE_ERROR, "in comp_td_point_to_point_delay: Delay is less than 0\n");
+    exit(1);
+  }
+
+  return (delay_source_to_sink);
+}
+
 static float comp_td_point_to_point_delay(int inet, int ipin) {
 
   /*returns the delay of one point to point connection */
@@ -2763,6 +2861,10 @@ static void update_td_cost1(t_pl_blocks_to_be_moved local_blocks_affected) {
         continue;
 
       if (clb_net[inet].is_global)
+        continue;
+
+      // TAN: WIP
+      if (clb_net[inet].node_block[0] != bnum)
         continue;
 
       net_pin = net_pin_index[bnum][iblk_pin];
@@ -2888,6 +2990,10 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
       if (clb_net[inet].is_global)
         continue;
 
+      // TAN: WIP
+      if (clb_net[inet].node_block[0] != bnum)
+        continue;
+
       net_pin = net_pin_index[bnum][iblk_pin];
 
       if (net_pin != 0) { 
@@ -2903,7 +3009,7 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
         }
         
         if (driven_by_moved_block == FALSE) {
-          temp_delay = comp_td_point_to_point_delay(inet, net_pin);
+          temp_delay = comp_td_point_to_point_delay1(inet, net_pin);
           //temp_point_to_point_delay_cost[inet][net_pin] = temp_delay;
 
           //temp_point_to_point_timing_cost[inet][net_pin] =
@@ -2923,7 +3029,7 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
       } else { /* This net is being driven by a moved block, recompute */
         /* All point to point connections on this net. */
         for (ipin = 1; ipin <= clb_net[inet].num_sinks; ipin++) {
-          temp_delay = comp_td_point_to_point_delay(inet, ipin);
+          temp_delay = comp_td_point_to_point_delay1(inet, ipin);
           //temp_point_to_point_delay_cost[inet][ipin] = temp_delay;
 
           float temp_timing_cost = timing_place_crit[inet][ipin] * temp_delay;
@@ -3378,6 +3484,107 @@ static void alloc_and_load_try_swap_structs() {
   
 }
 
+static void get_bb_from_scratch1(int inet, struct s_bb *coords,
+    struct s_bb *num_on_edges) {
+
+  /* This routine finds the bounding box of each net from scratch (i.e.    *
+   * from only the block location information).  It updates both the       *
+   * coordinate and number of pins on each edge information.  It         *
+   * should only be called when the bounding box information is not valid. */
+
+  int ipin, bnum, pnum, x, y, xmin, xmax, ymin, ymax;
+  int xmin_edge, xmax_edge, ymin_edge, ymax_edge;
+  int n_pins;
+
+  n_pins = clb_net[inet].num_sinks + 1;
+  
+  bnum = clb_net[inet].node_block[0];
+  pnum = clb_net[inet].node_block_pin[0];
+
+  // TAN: use old info of (x, y) if bnum is not managed by current thread
+  if (block[bnum].assigned_tid == omp_get_thread_num()) {
+    x = block[bnum].x;
+    y = block[bnum].y + block[bnum].type->pin_height[pnum];
+  } else {
+    x = block[bnum].old_x;
+    y = block[bnum].old_y + block[bnum].type->pin_height[pnum];
+  }
+
+  x = std::max(std::min(x, nx), 1);
+  y = std::max(std::min(y, ny), 1);
+
+  xmin = x;
+  ymin = y;
+  xmax = x;
+  ymax = y;
+  xmin_edge = 1;
+  ymin_edge = 1;
+  xmax_edge = 1;
+  ymax_edge = 1;
+
+  for (ipin = 1; ipin < n_pins; ipin++) {
+    bnum = clb_net[inet].node_block[ipin];
+    pnum = clb_net[inet].node_block_pin[ipin];
+
+    // TAN: use old info of (x, y) if bnum is not managed by current thread
+    if (block[bnum].assigned_tid == omp_get_thread_num()) {
+      x = block[bnum].x;
+      y = block[bnum].y + block[bnum].type->pin_height[pnum];
+    } else {
+      x = block[bnum].old_x;
+      y = block[bnum].old_y + block[bnum].type->pin_height[pnum];
+    }
+
+    /* Code below counts IO blocks as being within the 1..nx, 1..ny clb array. *
+     * This is because channels do not go out of the 0..nx, 0..ny range, and   *
+     * I always take all channels impinging on the bounding box to be within   *
+     * that bounding box.  Hence, this "movement" of IO blocks does not affect *
+     * the which channels are included within the bounding box, and it         *
+     * simplifies the code a lot.                                              */
+
+    x = std::max(std::min(x, nx), 1);
+    y = std::max(std::min(y, ny), 1);
+
+    if (x == xmin) {
+      xmin_edge++;
+    }
+    if (x == xmax) { /* Recall that xmin could equal xmax -- don't use else */
+      xmax_edge++;
+    } else if (x < xmin) {
+      xmin = x;
+      xmin_edge = 1;
+    } else if (x > xmax) {
+      xmax = x;
+      xmax_edge = 1;
+    }
+
+    if (y == ymin) {
+      ymin_edge++;
+    }
+    if (y == ymax) {
+      ymax_edge++;
+    } else if (y < ymin) {
+      ymin = y;
+      ymin_edge = 1;
+    } else if (y > ymax) {
+      ymax = y;
+      ymax_edge = 1;
+    }
+  }
+
+  /* Copy the coordinates and number on edges information into the proper   *
+   * structures.                                                            */
+  coords->xmin = xmin;
+  coords->xmax = xmax;
+  coords->ymin = ymin;
+  coords->ymax = ymax;
+
+  num_on_edges->xmin = xmin_edge;
+  num_on_edges->xmax = xmax_edge;
+  num_on_edges->ymin = ymin_edge;
+  num_on_edges->ymax = ymax_edge;
+}
+
 static void get_bb_from_scratch(int inet, struct s_bb *coords,
     struct s_bb *num_on_edges) {
 
@@ -3413,6 +3620,7 @@ static void get_bb_from_scratch(int inet, struct s_bb *coords,
   for (ipin = 1; ipin < n_pins; ipin++) {
     bnum = clb_net[inet].node_block[ipin];
     pnum = clb_net[inet].node_block_pin[ipin];
+
     x = block[bnum].x;
     y = block[bnum].y + block[bnum].type->pin_height[pnum];
 
@@ -3534,6 +3742,74 @@ static float get_net_cost(int inet, struct s_bb *bbptr) {
   return (ncost);
 }
 
+static void get_non_updateable_bb1(int inet, struct s_bb *bb_coord_new) {
+
+  /* Finds the bounding box of a net and stores its coordinates in the  *
+   * bb_coord_new data structure.  This routine should only be called   *
+   * for small nets, since it does not determine enough information for *
+   * the bounding box to be updated incrementally later.                *
+   * Currently assumes channels on both sides of the CLBs forming the   *
+   * edges of the bounding box can be used.  Essentially, I am assuming *
+   * the pins always lie on the outside of the bounding box.            */
+
+  int k, xmax, ymax, xmin, ymin, x, y;
+  int bnum, pnum;
+
+  bnum = clb_net[inet].node_block[0];
+  pnum = clb_net[inet].node_block_pin[0];
+
+  // TAN: use old info of (x, y) if bnum is not managed by current thread
+  if (block[bnum].assigned_tid == omp_get_thread_num()) {
+    x = block[bnum].x;
+    y = block[bnum].y + block[bnum].type->pin_height[pnum];
+  } else {
+    x = block[bnum].old_x;
+    y = block[bnum].old_y + block[bnum].type->pin_height[pnum];
+  }
+ 
+  xmin = x;
+  ymin = y;
+  xmax = x;
+  ymax = y;
+
+  for (k = 1; k < (clb_net[inet].num_sinks + 1); k++) {
+    bnum = clb_net[inet].node_block[k];
+    pnum = clb_net[inet].node_block_pin[k];
+    // TAN: use old info of (x, y) if bnum is not managed by current thread
+    if (block[bnum].assigned_tid == omp_get_thread_num()) {
+      x = block[bnum].x;
+      y = block[bnum].y + block[bnum].type->pin_height[pnum];
+    } else {
+      x = block[bnum].old_x;
+      y = block[bnum].old_y + block[bnum].type->pin_height[pnum];
+    }
+
+    if (x < xmin) {
+      xmin = x;
+    } else if (x > xmax) {
+      xmax = x;
+    }
+
+    if (y < ymin) {
+      ymin = y;
+    } else if (y > ymax) {
+      ymax = y;
+    }
+  }
+
+  /* Now I've found the coordinates of the bounding box.  There are no *
+   * channels beyond nx and ny, so I want to clip to that.  As well,   *
+   * since I'll always include the channel immediately below and the   *
+   * channel immediately to the left of the bounding box, I want to    *
+   * clip to 1 in both directions as well (since minimum channel index *
+   * is 0).  See route.c for a channel diagram.                        */
+
+  bb_coord_new->xmin = std::max(std::min(xmin, nx), 1);
+  bb_coord_new->ymin = std::max(std::min(ymin, ny), 1);
+  bb_coord_new->xmax = std::max(std::min(xmax, nx), 1);
+  bb_coord_new->ymax = std::max(std::min(ymax, ny), 1);
+}
+
 static void get_non_updateable_bb(int inet, struct s_bb *bb_coord_new) {
 
   /* Finds the bounding box of a net and stores its coordinates in the  *
@@ -3587,6 +3863,221 @@ static void get_non_updateable_bb(int inet, struct s_bb *bb_coord_new) {
   bb_coord_new->ymin = std::max(std::min(ymin, ny), 1);
   bb_coord_new->xmax = std::max(std::min(xmax, nx), 1);
   bb_coord_new->ymax = std::max(std::min(ymax, ny), 1);
+}
+
+static void update_bb1(int inet, struct s_bb *bb_coord_new,
+    struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew) {
+
+  /* Updates the bounding box of a net by storing its coordinates in    *
+   * the bb_coord_new data structure and the number of blocks on each   *
+   * edge in the bb_edge_new data structure.  This routine should only  *
+   * be called for large nets, since it has some overhead relative to   *
+   * just doing a brute force bounding box calculation.  The bounding   *
+   * box coordinate and edge information for inet must be valid before  *
+   * this routine is called.                                            *
+   * Currently assumes channels on both sides of the CLBs forming the   *
+   * edges of the bounding box can be used.  Essentially, I am assuming *
+   * the pins always lie on the outside of the bounding box.            *
+   * The x and y coordinates are the pin's x and y coordinates.         */
+  /* IO blocks are considered to be one cell in for simplicity.         */
+  
+  struct s_bb *curr_bb_edge, *curr_bb_coord;
+    
+  xnew = std::max(std::min(xnew, nx), 1);
+  ynew = std::max(std::min(ynew, ny), 1);
+  xold = std::max(std::min(xold, nx), 1);
+  yold = std::max(std::min(yold, ny), 1);
+
+  /* Check if the net had been updated before. */
+  if (bb_updated_before[inet] == GOT_FROM_SCRATCH)
+  { /* The net had been updated from scratch, DO NOT update again! */
+    return;
+  }
+  else if (bb_updated_before[inet] == NOT_UPDATED_YET)
+  { /* The net had NOT been updated before, could use the old values */
+    curr_bb_coord = &bb_coords[inet];
+    curr_bb_edge = &bb_num_on_edges[inet];
+    bb_updated_before[inet] = UPDATED_ONCE;
+  }
+  else
+  { /* The net had been updated before, must use the new values */
+    curr_bb_coord = bb_coord_new;
+    curr_bb_edge = bb_edge_new;
+  }
+
+  /* Check if I can update the bounding box incrementally. */
+
+  if (xnew < xold) { /* Move to left. */
+
+    /* Update the xmax fields for coordinates and number of edges first. */
+
+    if (xold == curr_bb_coord->xmax) { /* Old position at xmax. */
+      if (curr_bb_edge->xmax == 1) {
+        get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
+        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        return;
+      } else {
+        bb_edge_new->xmax = curr_bb_edge->xmax - 1;
+        bb_coord_new->xmax = curr_bb_coord->xmax;
+      }
+    }
+
+    else { /* Move to left, old postion was not at xmax. */
+      bb_coord_new->xmax = curr_bb_coord->xmax;
+      bb_edge_new->xmax = curr_bb_edge->xmax;
+    }
+
+    /* Now do the xmin fields for coordinates and number of edges. */
+
+    if (xnew < curr_bb_coord->xmin) { /* Moved past xmin */
+      bb_coord_new->xmin = xnew;
+      bb_edge_new->xmin = 1;
+    }
+
+    else if (xnew == curr_bb_coord->xmin) { /* Moved to xmin */
+      bb_coord_new->xmin = xnew;
+      bb_edge_new->xmin = curr_bb_edge->xmin + 1;
+    }
+
+    else { /* Xmin unchanged. */
+      bb_coord_new->xmin = curr_bb_coord->xmin;
+      bb_edge_new->xmin = curr_bb_edge->xmin;
+    }
+  }
+
+  /* End of move to left case. */
+  else if (xnew > xold) { /* Move to right. */
+
+    /* Update the xmin fields for coordinates and number of edges first. */
+
+    if (xold == curr_bb_coord->xmin) { /* Old position at xmin. */
+      if (curr_bb_edge->xmin == 1) {
+        get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
+        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        return;
+      } else {
+        bb_edge_new->xmin = curr_bb_edge->xmin - 1;
+        bb_coord_new->xmin = curr_bb_coord->xmin;
+      }
+    }
+
+    else { /* Move to right, old position was not at xmin. */
+      bb_coord_new->xmin = curr_bb_coord->xmin;
+      bb_edge_new->xmin = curr_bb_edge->xmin;
+    }
+
+    /* Now do the xmax fields for coordinates and number of edges. */
+
+    if (xnew > curr_bb_coord->xmax) { /* Moved past xmax. */
+      bb_coord_new->xmax = xnew;
+      bb_edge_new->xmax = 1;
+    }
+
+    else if (xnew == curr_bb_coord->xmax) { /* Moved to xmax */
+      bb_coord_new->xmax = xnew;
+      bb_edge_new->xmax = curr_bb_edge->xmax + 1;
+    }
+
+    else { /* Xmax unchanged. */
+      bb_coord_new->xmax = curr_bb_coord->xmax;
+      bb_edge_new->xmax = curr_bb_edge->xmax;
+    }
+  }
+  /* End of move to right case. */
+  else { /* xnew == xold -- no x motion. */
+    bb_coord_new->xmin = curr_bb_coord->xmin;
+    bb_coord_new->xmax = curr_bb_coord->xmax;
+    bb_edge_new->xmin = curr_bb_edge->xmin;
+    bb_edge_new->xmax = curr_bb_edge->xmax;
+  }
+
+  /* Now account for the y-direction motion. */
+
+  if (ynew < yold) { /* Move down. */
+
+    /* Update the ymax fields for coordinates and number of edges first. */
+
+    if (yold == curr_bb_coord->ymax) { /* Old position at ymax. */
+      if (curr_bb_edge->ymax == 1) {
+        get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
+        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        return;
+      } else {
+        bb_edge_new->ymax = curr_bb_edge->ymax - 1;
+        bb_coord_new->ymax = curr_bb_coord->ymax;
+      }
+    }
+
+    else { /* Move down, old postion was not at ymax. */
+      bb_coord_new->ymax = curr_bb_coord->ymax;
+      bb_edge_new->ymax = curr_bb_edge->ymax;
+    }
+
+    /* Now do the ymin fields for coordinates and number of edges. */
+
+    if (ynew < curr_bb_coord->ymin) { /* Moved past ymin */
+      bb_coord_new->ymin = ynew;
+      bb_edge_new->ymin = 1;
+    }
+
+    else if (ynew == curr_bb_coord->ymin) { /* Moved to ymin */
+      bb_coord_new->ymin = ynew;
+      bb_edge_new->ymin = curr_bb_edge->ymin + 1;
+    }
+
+    else { /* ymin unchanged. */
+      bb_coord_new->ymin = curr_bb_coord->ymin;
+      bb_edge_new->ymin = curr_bb_edge->ymin;
+    }
+  }
+  /* End of move down case. */
+  else if (ynew > yold) { /* Moved up. */
+
+    /* Update the ymin fields for coordinates and number of edges first. */
+
+    if (yold == curr_bb_coord->ymin) { /* Old position at ymin. */
+      if (curr_bb_edge->ymin == 1) {
+        get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
+        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        return;
+      } else {
+        bb_edge_new->ymin = curr_bb_edge->ymin - 1;
+        bb_coord_new->ymin = curr_bb_coord->ymin;
+      }
+    }
+
+    else { /* Moved up, old position was not at ymin. */
+      bb_coord_new->ymin = curr_bb_coord->ymin;
+      bb_edge_new->ymin = curr_bb_edge->ymin;
+    }
+
+    /* Now do the ymax fields for coordinates and number of edges. */
+
+    if (ynew > curr_bb_coord->ymax) { /* Moved past ymax. */
+      bb_coord_new->ymax = ynew;
+      bb_edge_new->ymax = 1;
+    }
+
+    else if (ynew == curr_bb_coord->ymax) { /* Moved to ymax */
+      bb_coord_new->ymax = ynew;
+      bb_edge_new->ymax = curr_bb_edge->ymax + 1;
+    }
+
+    else { /* ymax unchanged. */
+      bb_coord_new->ymax = curr_bb_coord->ymax;
+      bb_edge_new->ymax = curr_bb_edge->ymax;
+    }
+  }
+  /* End of move up case. */
+  else { /* ynew == yold -- no y motion. */
+    bb_coord_new->ymin = curr_bb_coord->ymin;
+    bb_coord_new->ymax = curr_bb_coord->ymax;
+    bb_edge_new->ymin = curr_bb_edge->ymin;
+    bb_edge_new->ymax = curr_bb_edge->ymax;
+  }
+
+  if (bb_updated_before[inet] == NOT_UPDATED_YET)
+    bb_updated_before[inet] = UPDATED_ONCE;
 }
 
 static void update_bb(int inet, struct s_bb *bb_coord_new,
