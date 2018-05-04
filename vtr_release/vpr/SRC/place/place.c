@@ -827,9 +827,6 @@ void try_place(struct s_placer_opts placer_opts,
   omp_set_num_threads(OMP_NUM_THREADS);
   float local_bb_costs[OMP_NUM_THREADS];
   int recompute_timing = 0;
-  int recompute_after_move = 0;
-  //clock_t begin, end;
-  //begin = clock();
 
   int i;
   int **local_ts_nets_to_update = (int **)malloc(OMP_NUM_THREADS * sizeof(int *));
@@ -971,19 +968,7 @@ void try_place(struct s_placer_opts placer_opts,
 
     int lb_x, ub_x, lb_y, ub_y;
     for (idx = 0; idx < num_moves; idx++) {
-      // TAN: this is where it matters ...
       for (s_idx = 0; s_idx < num_subregions; s_idx++) {
-//        lb_x = tid * segment_x + s_idx * subsegment_x;
-//        ub_x = tid * segment_x + subsegment_x + s_idx * subsegment_x - 1;
-//        lb_y = 0;
-//        ub_y = ny + 1;
-//        // TAN: expand the subregions to ensure the blocks can migrate to
-//        // different subregions
-//        if (!(tid == 0 && s_idx == 0))
-//          lb_x = lb_x - 1;
-//
-//        if (!(tid == num_threads - 1 && s_idx == num_subregions - 1))
-//          ub_x = ub_x + 1;
 
         if (s_idx % 2 == 0) {
           lb_x = 0;
@@ -1084,9 +1069,6 @@ void try_place(struct s_placer_opts placer_opts,
       } // num_subregions
     } // num_moves
 
-
-    //printf("examine tid %d local_cost %g, old_cost %g\n", tid, local_cost, old_cost);
-
     // TAN: here we update global variables, so must use atomic operations
     #pragma omp critical
     {
@@ -1108,27 +1090,8 @@ void try_place(struct s_placer_opts placer_opts,
 
     #pragma omp barrier
 
-    /* Lines below prevent too much round-off error from accumulating *
-     * in the cost over many iterations.  This round-off can lead to  *
-     * error checks failing because the cost is different from what   *
-     * you get when you recompute from scratch.                       */
-
     if (tid == 0) {
       cost = (cost - old_cost) / num_threads;
-
-      if (moves_since_cost_recompute > MAX_MOVES_BEFORE_RECOMPUTE) {
-        recompute_after_move = 1;
-        new_bb_cost = 0.;
-        new_timing_cost = 0.;
-        new_delay_cost = 0.;
-      } else
-        recompute_after_move = 0;
-      moves_since_cost_recompute = 0;
-    }
-
-    #pragma omp barrier
-
-    if (tid == 0) {
       tot_iter += num_total_moves;
       success_rat = ((float) success_sum) / num_total_moves;
       if (success_sum == 0) {
@@ -1171,23 +1134,11 @@ void try_place(struct s_placer_opts placer_opts,
     // TAN: sync before we move to the next annealing iteration.
     // Very conservative
     #pragma omp barrier
-
-    //if (cost < 0) {
-    //  printf("impossible! tid %d cost %g\n", tid, cost);
-    //}
-
-    //printf("annealing iteration tid: %d, temp: %g, cost: %g, condition: %d\n",
-    //  tid, t, cost, exit_crit(t, cost, annealing_sched));
-
   }
 
   free(local_blocks_affected.moved_blocks);
-  //printf("tid %d done\n", tid);
 
   } // end of omp parallel region
-
-  //end = clock();
-  //printf("Simulated annealing took: %g seconds\n", (float)(end - begin) / CLOCKS_PER_SEC);
 
   simulation_time = read_timer() - simulation_time;
   printf("Simulated annealing took: %g seconds\n", simulation_time);
