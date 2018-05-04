@@ -23,7 +23,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#define OMP_NUM_THREADS 2
+#define OMP_NUM_THREADS 16
 #define PARALLEL
 
 //
@@ -1442,7 +1442,7 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
     } else if (success_rat > 0.2 || rlim > 1.) {
       *t = (*t) * 0.8;
     } else {
-      *t = (*t) * 0.8;
+      *t = (*t) * 0.7;
     }
 #endif
   }
@@ -1450,18 +1450,17 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
 
 static void update_num_moves(float success_rat, int *num_moves) {
   if (success_rat >= 0.5 && success_rat < 1)
-    *num_moves = 4;
+    *num_moves = 8;
 
   if (success_rat >= 0.4 && success_rat < 0.5)
-    *num_moves = 8;
+    *num_moves = 16;
 
   if (success_rat < 0.4)
     *num_moves = *num_moves + 1;
 
-  if (*num_moves > 16)
-    *num_moves = 16;
+  if (*num_moves > 32)
+    *num_moves = 32;
 
-  //*num_moves = 30;
 }
 
 static int exit_crit(float t, float cost,
