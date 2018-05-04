@@ -1990,7 +1990,7 @@ static enum swap_result try_swap1(float t,
 
         // TAN: this is dangerous. Need to make sure that global variables
         // are updated properly when running with multiple threads
-        //update_td_cost1(*local_blocks_affected);
+        update_td_cost1(*local_blocks_affected);
       }
 
       /* update net cost functions and reset flags. */
@@ -2815,24 +2815,20 @@ static void update_td_cost1(t_pl_blocks_to_be_moved local_blocks_affected) {
         if (driven_by_moved_block == FALSE) {
           point_to_point_delay_cost[inet][net_pin] =
               temp_point_to_point_delay_cost[inet][net_pin];
-          // TAN: do not invalidate temp_var here to avoid data race
-          //temp_point_to_point_delay_cost[inet][net_pin] = -1;
+          temp_point_to_point_delay_cost[inet][net_pin] = -1;
           point_to_point_timing_cost[inet][net_pin] =
               temp_point_to_point_timing_cost[inet][net_pin];
-          // TAN: do not invalidate temp_var here to avoid data race
-          //temp_point_to_point_timing_cost[inet][net_pin] = -1;
+          temp_point_to_point_timing_cost[inet][net_pin] = -1;
         }
       } else { /* This net is being driven by a moved block, recompute */
         /* All point to point connections on this net. */
         for (ipin = 1; ipin <= clb_net[inet].num_sinks; ipin++) {
           point_to_point_delay_cost[inet][ipin] =
               temp_point_to_point_delay_cost[inet][ipin];
-          // TAN: do not invalidate temp_var here to avoid data race
-          //temp_point_to_point_delay_cost[inet][ipin] = -1;
+          temp_point_to_point_delay_cost[inet][ipin] = -1;
           point_to_point_timing_cost[inet][ipin] =
               temp_point_to_point_timing_cost[inet][ipin];
-          // TAN: do not invalidate temp_var here to avoid data race
-          //temp_point_to_point_timing_cost[inet][ipin] = -1;
+          temp_point_to_point_timing_cost[inet][ipin] = -1;
         } /* Finished updating the pin */
       }
     } /* Finished going through all the pins in the moved block */
@@ -2944,41 +2940,29 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
         
         if (driven_by_moved_block == FALSE) {
           temp_delay = comp_td_point_to_point_delay1(inet, net_pin);
-          //temp_point_to_point_delay_cost[inet][net_pin] = temp_delay;
+          temp_point_to_point_delay_cost[inet][net_pin] = temp_delay;
 
-          //temp_point_to_point_timing_cost[inet][net_pin] =
-          //  timing_place_crit[inet][net_pin] * temp_delay;
-          float temp_timing_cost = timing_place_crit[inet][net_pin] * temp_delay;
+          temp_point_to_point_timing_cost[inet][net_pin] =
+            timing_place_crit[inet][net_pin] * temp_delay;
 
-          //delta_timing_cost += temp_point_to_point_timing_cost[inet][net_pin]
-          //  - point_to_point_timing_cost[inet][net_pin];
-          //delta_delay_cost += temp_point_to_point_delay_cost[inet][net_pin]
-          //    - point_to_point_delay_cost[inet][net_pin];
-          delta_timing_cost += temp_timing_cost - 
-                               point_to_point_timing_cost[inet][net_pin];
-          delta_delay_cost += temp_delay -
-                               point_to_point_delay_cost[inet][net_pin];
+          delta_timing_cost += temp_point_to_point_timing_cost[inet][net_pin]
+            - point_to_point_timing_cost[inet][net_pin];
+          delta_delay_cost += temp_point_to_point_delay_cost[inet][net_pin]
+              - point_to_point_delay_cost[inet][net_pin];
 
         }
       } else { /* This net is being driven by a moved block, recompute */
         /* All point to point connections on this net. */
         for (ipin = 1; ipin <= clb_net[inet].num_sinks; ipin++) {
           temp_delay = comp_td_point_to_point_delay1(inet, ipin);
-          //temp_point_to_point_delay_cost[inet][ipin] = temp_delay;
+          temp_point_to_point_delay_cost[inet][ipin] = temp_delay;
 
-          float temp_timing_cost = timing_place_crit[inet][ipin] * temp_delay;
-
-          //temp_point_to_point_timing_cost[inet][ipin] =
-          //  timing_place_crit[inet][ipin] * temp_delay;
-          //delta_timing_cost += temp_point_to_point_timing_cost[inet][ipin]
-          //  - point_to_point_timing_cost[inet][ipin];
-          //delta_delay_cost += temp_point_to_point_delay_cost[inet][ipin]
-          //    - point_to_point_delay_cost[inet][ipin];
-          delta_timing_cost += temp_timing_cost - 
-                               point_to_point_timing_cost[inet][ipin];
-          delta_delay_cost += temp_delay -
-                               point_to_point_delay_cost[inet][ipin];
-
+          temp_point_to_point_timing_cost[inet][ipin] =
+            timing_place_crit[inet][ipin] * temp_delay;
+          delta_timing_cost += temp_point_to_point_timing_cost[inet][ipin]
+            - point_to_point_timing_cost[inet][ipin];
+          delta_delay_cost += temp_point_to_point_delay_cost[inet][ipin]
+              - point_to_point_delay_cost[inet][ipin];
 
         } /* Finished updating the pin */
       }
