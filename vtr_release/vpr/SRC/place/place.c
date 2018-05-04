@@ -1458,11 +1458,10 @@ static void update_num_moves(float success_rat, int *num_moves) {
   if (success_rat < 0.4)
     *num_moves = *num_moves + 1;
 
-  // TAN: Cap at 20 ...
-  if (*num_moves > 20)
-    *num_moves = 20;
+  if (*num_moves > 16)
+    *num_moves = 16;
 
-  *num_moves = 10;
+  //*num_moves = 30;
 }
 
 static int exit_crit(float t, float cost,
@@ -1956,7 +1955,7 @@ static enum swap_result try_swap1(float t,
       inet = local_ts_nets_to_update[inet_affected];
 
       float net_cost_val = get_net_cost(inet, &ts_bb_coord_new[inet]);
-      //temp_net_cost[inet] = net_cost_val;
+      temp_net_cost[inet] = net_cost_val;
       bb_delta_c += net_cost_val - net_cost[inet];
     }
 
@@ -2002,7 +2001,7 @@ static enum swap_result try_swap1(float t,
         if (clb_net[inet].num_sinks >= SMALL_NET)
           bb_num_on_edges[inet] = ts_bb_edge_new[inet];
       
-        //net_cost[inet] = temp_net_cost[inet];
+        net_cost[inet] = temp_net_cost[inet];
 
         /* negative temp_net_cost value is acting as a flag. */
         temp_net_cost[inet] = -1;
