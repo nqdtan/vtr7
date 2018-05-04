@@ -797,7 +797,7 @@ float my_frand1(unsigned int *local_current_random) {
 	int ival;
 
 	*local_current_random = *local_current_random * IA + IC; /* Use overflow to wrap */
-	ival = current_random & (IM - 1); /* Modulus */
+	ival = *local_current_random & (IM - 1); /* Modulus */
 	fval = (float) ival / (float) IM;
 
 #ifdef CHECK_RAND
