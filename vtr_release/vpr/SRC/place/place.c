@@ -1466,8 +1466,8 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
       *t = (*t) * 0.5;
     } else if (success_rat > 0.8) {
       *t = (*t) * 0.7;
-    } else if (success_rat > 0.2 || rlim > 1.) {
-      *t = (*t) * 0.8;
+    } else if (success_rat > 0.25 || rlim > 1.) {
+      *t = (*t) * 0.9;
     } else {
       *t = (*t) * 0.7;
     }
@@ -1487,6 +1487,8 @@ static void update_num_moves(float success_rat, int *num_moves) {
 
   if (*num_moves > 32)
     *num_moves = 32;
+
+  //*num_moves = 32;
 }
 
 static int exit_crit(float t, float cost,
@@ -2014,7 +2016,7 @@ static enum swap_result try_swap1(float t,
 
         // TAN: this is dangerous. Need to make sure that global variables
         // are updated properly when running with multiple threads
-        update_td_cost1(*local_blocks_affected);
+        //update_td_cost1(*local_blocks_affected);
       }
 
       /* update net cost functions and reset flags. */
@@ -2827,8 +2829,8 @@ static void update_td_cost1(t_pl_blocks_to_be_moved local_blocks_affected) {
       if (net_pin != 0) {
 
         driven_by_moved_block = FALSE;
-        for (iblk2 = 0; iblk2 < local_blocks_affected.num_moved_blocks; iblk2++)
-        { if (clb_net[inet].node_block[0] == local_blocks_affected.moved_blocks[iblk2].block_num)
+        for (iblk2 = 0; iblk2 < local_blocks_affected.num_moved_blocks; iblk2++) {
+          if (clb_net[inet].node_block[0] == local_blocks_affected.moved_blocks[iblk2].block_num)
             driven_by_moved_block = TRUE;
         }
         
@@ -2941,10 +2943,6 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
       if (clb_net[inet].is_global)
         continue;
 
-      // TAN: WIP
-      if (block[clb_net[inet].node_block[0]].assigned_tid != omp_get_thread_num())
-        continue;
-
       net_pin = net_pin_index[bnum][iblk_pin];
 
       if (net_pin != 0) { 
@@ -2961,14 +2959,18 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
         
         if (driven_by_moved_block == FALSE) {
           temp_delay = comp_td_point_to_point_delay1(inet, net_pin);
-          temp_point_to_point_delay_cost[inet][net_pin] = temp_delay;
+          //temp_point_to_point_delay_cost[inet][net_pin] = temp_delay;
 
-          temp_point_to_point_timing_cost[inet][net_pin] =
-            timing_place_crit[inet][net_pin] * temp_delay;
+          //temp_point_to_point_timing_cost[inet][net_pin] =
+          //  timing_place_crit[inet][net_pin] * temp_delay;
 
-          delta_timing_cost += temp_point_to_point_timing_cost[inet][net_pin]
+          //delta_timing_cost += temp_point_to_point_timing_cost[inet][net_pin]
+          //  - point_to_point_timing_cost[inet][net_pin];
+          //delta_delay_cost += temp_point_to_point_delay_cost[inet][net_pin]
+          //    - point_to_point_delay_cost[inet][net_pin];
+          delta_timing_cost += timing_place_crit[inet][net_pin] * temp_delay
             - point_to_point_timing_cost[inet][net_pin];
-          delta_delay_cost += temp_point_to_point_delay_cost[inet][net_pin]
+          delta_delay_cost += temp_delay
               - point_to_point_delay_cost[inet][net_pin];
 
         }
@@ -2976,13 +2978,17 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
         /* All point to point connections on this net. */
         for (ipin = 1; ipin <= clb_net[inet].num_sinks; ipin++) {
           temp_delay = comp_td_point_to_point_delay1(inet, ipin);
-          temp_point_to_point_delay_cost[inet][ipin] = temp_delay;
+          //temp_point_to_point_delay_cost[inet][ipin] = temp_delay;
 
-          temp_point_to_point_timing_cost[inet][ipin] =
-            timing_place_crit[inet][ipin] * temp_delay;
-          delta_timing_cost += temp_point_to_point_timing_cost[inet][ipin]
+          //temp_point_to_point_timing_cost[inet][ipin] =
+          //  timing_place_crit[inet][ipin] * temp_delay;
+          //delta_timing_cost += temp_point_to_point_timing_cost[inet][ipin]
+          //  - point_to_point_timing_cost[inet][ipin];
+          //delta_delay_cost += temp_point_to_point_delay_cost[inet][ipin]
+          //    - point_to_point_delay_cost[inet][ipin];
+          delta_timing_cost += timing_place_crit[inet][ipin] * temp_delay
             - point_to_point_timing_cost[inet][ipin];
-          delta_delay_cost += temp_point_to_point_delay_cost[inet][ipin]
+          delta_delay_cost += temp_delay
               - point_to_point_delay_cost[inet][ipin];
 
         } /* Finished updating the pin */
