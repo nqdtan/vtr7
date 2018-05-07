@@ -1024,21 +1024,26 @@ void try_place(struct s_placer_opts placer_opts,
         //printf("[s_idx=%d] CHECK tid=%d, lb_x=%d, ub_x=%d, lb_y=%d, ub_y=%d\n",
         //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
         //printf("[tid %d] old_local_bb_cost=%g\n", tid, local_bb_cost);
-        for (x = lb_x; x <= ub_x; x++) {
-          for (y = lb_y; y <= ub_y; y++) {
+        int m, l;
+        for (l = 0; l < 4; l++) {
+          for (m = 0; m < (nx + 1) * (ny + 1) / OMP_NUM_THREADS; m++) {
+            x = lb_x + my_irand1(ub_x - lb_x, &local_current_random);
+            y = lb_y + my_irand1(ub_y - lb_y, &local_current_random);
+            if (grid[x][y].type->capacity == 0)
+              continue;
 
-            for (z = 0; z < grid[x][y].type->capacity; z++) {
-              int block_num = grid[x][y].blocks[z];
+            z = my_irand1(grid[x][y].type->capacity - 1, &local_current_random);
+            int block_num = grid[x][y].blocks[z];
 
-              if (block_num == -1)
-                continue;
+            if (block_num == -1)
+              continue;
 
-              if (block[block_num].isFixed == TRUE)
-                continue;
+            if (block[block_num].isFixed == TRUE)
+              continue;
 
-              num_local_moves++;
-              local_num_ts_called++;
-              swap_result = try_swap1(t,
+            num_local_moves++;
+            local_num_ts_called++;
+            swap_result = try_swap1(t,
                 &local_cost, &local_bb_cost, &local_timing_cost,
                 rlim,
                 placer_opts.place_algorithm, placer_opts.timing_tradeoff,
@@ -1048,51 +1053,48 @@ void try_place(struct s_placer_opts placer_opts,
                 block_num, lb_x, ub_x, lb_y, ub_y, &local_current_random,
                 local_ts_bb_coord_new, local_ts_bb_edge_new, local_bb_updated_before,
                 local_net_cost, local_temp_net_cost
-              );
+            );
 
-              if (swap_result == ACCEPTED) {
-                /* Move was accepted.  Update statistics that are useful for the annealing schedule. */
-                local_success_sum++;
-                local_av_cost += local_cost;
-                local_av_bb_cost += local_bb_cost;
-                local_av_timing_cost += local_timing_cost;
-                local_av_delay_cost += local_delay_cost;
-                local_sum_of_squares += local_cost * local_cost;
-                local_num_swap_accepted++;
-              } else if (swap_result == ABORTED) {
-                local_num_swap_aborted++;
-              } else { // swap_result == REJECTED
-                local_num_swap_rejected++;
-              }
-
+            if (swap_result == ACCEPTED) {
+              /* Move was accepted.  Update statistics that are useful for the annealing schedule. */
+              local_success_sum++;
+              local_av_cost += local_cost;
+              local_av_bb_cost += local_bb_cost;
+              local_av_timing_cost += local_timing_cost;
+              local_av_delay_cost += local_delay_cost;
+              local_sum_of_squares += local_cost * local_cost;
+              local_num_swap_accepted++;
+            } else if (swap_result == ABORTED) {
+              local_num_swap_aborted++;
+            } else { // swap_result == REJECTED
+              local_num_swap_rejected++;
             }
           }
+
+          // TAN: sync before moving to the next iteration to ensure no swap conflict
+          #pragma omp barrier
+          local_bb_cost = comp_bb_cost1(NORMAL);
+          comp_td_costs1(&local_timing_cost, &local_delay_cost);
+          if (tid == 0) {
+            bb_cost = 0.;
+            timing_cost = 0.;
+            delay_cost = 0.;
+          }
+
+          #pragma omp barrier
+
+          #pragma omp critical
+          {
+          bb_cost += local_bb_cost;
+          timing_cost += local_timing_cost;
+          delay_cost += local_delay_cost;
+          }
+
+          #pragma omp barrier
+          local_bb_cost = bb_cost;
+          local_timing_cost = timing_cost;
+          local_delay_cost = delay_cost;
         }
-
-        // TAN: sync before moving to the next iteration to ensure no swap conflict
-        #pragma omp barrier
-        local_bb_cost = comp_bb_cost1(NORMAL);
-        comp_td_costs1(&local_timing_cost, &local_delay_cost);
-        if (tid == 0) {
-          bb_cost = 0.;
-          timing_cost = 0.;
-          delay_cost = 0.;
-        }
-
-        #pragma omp barrier
-
-        #pragma omp critical
-        {
-        bb_cost += local_bb_cost;
-        timing_cost += local_timing_cost;
-        delay_cost += local_delay_cost;
-        }
-
-        #pragma omp barrier
-        local_bb_cost = bb_cost;
-        local_timing_cost = timing_cost;
-        local_delay_cost = delay_cost;
-
       } // num_subregions
     } // num_moves
 
@@ -1143,7 +1145,6 @@ void try_place(struct s_placer_opts placer_opts,
     vpr_printf(TIO_MESSAGE_INFO, "%9.5f %9.5g %11.6g %11.6g %11.6g %11.6g %8.4f %8.4f %7.4f %7.4f %7.4f %9d %7.4f\n",
         oldt, av_cost, av_bb_cost, av_timing_cost, av_delay_cost, place_delay_value, 
         critical_path_delay, success_rat, std_dev, rlim, crit_exponent, tot_iter, t / oldt);
-    printf("num_moves: %d\n", num_moves);
 #endif
 
       update_screen(MINOR, msg, PLACEMENT, FALSE);
@@ -1466,8 +1467,8 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
       *t = (*t) * 0.5;
     } else if (success_rat > 0.8) {
       *t = (*t) * 0.7;
-    } else if (success_rat > 0.25 || rlim > 1.) {
-      *t = (*t) * 0.9;
+    } else if (success_rat > 0.15 || rlim > 1.) {
+      *t = (*t) * 0.8;
     } else {
       *t = (*t) * 0.7;
     }
@@ -1476,19 +1477,10 @@ static void update_t(float *t, float std_dev, float rlim, float success_rat,
 }
 
 static void update_num_moves(float success_rat, int *num_moves) {
-  if (success_rat >= 0.5 && success_rat < 1)
+  if (success_rat >= 0.7)
+    *num_moves = 2;
+  else
     *num_moves = 8;
-
-  if (success_rat >= 0.4 && success_rat < 0.5)
-    *num_moves = 16;
-
-  if (success_rat < 0.4)
-    *num_moves = *num_moves + 1;
-
-  if (*num_moves > 32)
-    *num_moves = 32;
-
-  //*num_moves = 32;
 }
 
 static int exit_crit(float t, float cost,
@@ -2952,8 +2944,8 @@ static void comp_delta_td_cost1(float *delta_timing, float *delta_delay,
          * computing it here would double count the change, and mess up the    *
          * delta_timing_cost value.                                            */
         driven_by_moved_block = FALSE;
-        for (iblk2 = 0; iblk2 < local_blocks_affected.num_moved_blocks; iblk2++)
-        { if (clb_net[inet].node_block[0] == local_blocks_affected.moved_blocks[iblk2].block_num)
+        for (iblk2 = 0; iblk2 < local_blocks_affected.num_moved_blocks; iblk2++) {
+          if (clb_net[inet].node_block[0] == local_blocks_affected.moved_blocks[iblk2].block_num)
             driven_by_moved_block = TRUE;
         }
         
