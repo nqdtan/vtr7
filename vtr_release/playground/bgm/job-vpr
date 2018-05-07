@@ -1,0 +1,36 @@
+#!/bin/bash -l
+#SBATCH -C haswell
+#SBATCH -p debug      # change this option for non-debug runs
+#SBATCH -N 1          # you'll never need more than 1 node for the openmp code
+#SBATCH -t 00:30:00   # adjust the amount of time as necessary
+#SBATCH -J vpr
+#SBATCH -o vpr.%j.stdout
+#SBATCH -e vpr.%j.error
+
+export OMP_PLACES=cores
+export OMP_PROC_BIND=spread
+export OMP_NUM_THREADS=64
+#srun -N 1 -n 1 -c 16 ../vpr/vpr k6_frac_N10_mem32K_40nm.xml bgm/bgm.blif --nodisp -place
+#srun -N 1 -n 1 -c 16 ../vpr/vpr k6_frac_N10_mem32K_40nm.xml bgm/bgm.blif --nodisp --route_chan_width 300
+
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml bgm.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml LU32PEEng.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml LU8PEEng.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml blob_merge.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml boundtop.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml ch_intrinsics.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml diffeq1.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml diffeq2.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml mcml.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml mkDelayWorker32B.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml mkPktMerge.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml mkSMAdapter4B.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml or1200.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml raygentop.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml sha.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml stereovision0.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml stereovision1.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml stereovision2.blif --nodisp --route_chan_width 300
+#srun -N 1 -n 1 -c 1 ./vpr_orig k6_frac_N10_mem32K_40nm.xml stereovision3.blif --nodisp --route_chan_width 300
+
+srun -N 1 -n 1 -c 64 ./run.sh
