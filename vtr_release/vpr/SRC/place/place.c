@@ -1025,7 +1025,7 @@ void try_place(struct s_placer_opts placer_opts,
         //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
         //printf("[tid %d] old_local_bb_cost=%g\n", tid, local_bb_cost);
         int m, l;
-        for (l = 0; l < 4; l++) {
+        for (l = 0; l < 5; l++) {
           for (m = 0; m < (nx + 1) * (ny + 1) / OMP_NUM_THREADS; m++) {
             x = lb_x + my_irand1(ub_x - lb_x, &local_current_random);
             y = lb_y + my_irand1(ub_y - lb_y, &local_current_random);
@@ -1480,7 +1480,7 @@ static void update_num_moves(float success_rat, int *num_moves) {
   if (success_rat >= 0.7)
     *num_moves = 2;
   else
-    *num_moves = 8;
+    *num_moves = 6;
 }
 
 static int exit_crit(float t, float cost,
