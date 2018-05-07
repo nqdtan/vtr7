@@ -1025,8 +1025,8 @@ void try_place(struct s_placer_opts placer_opts,
         //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
         //printf("[tid %d] old_local_bb_cost=%g\n", tid, local_bb_cost);
         int m, l;
-        for (l = 0; l < 5; l++) {
-          for (m = 0; m < (nx + 1) * (ny + 1) / OMP_NUM_THREADS; m++) {
+        for (l = 0; l < 8; l++) {
+          for (m = 0; m < (nx + 1) * (ny + 1) / (2 * OMP_NUM_THREADS); m++) {
             x = lb_x + my_irand1(ub_x - lb_x, &local_current_random);
             y = lb_y + my_irand1(ub_y - lb_y, &local_current_random);
             if (grid[x][y].type->capacity == 0)
