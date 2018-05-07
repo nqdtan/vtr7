@@ -279,7 +279,10 @@ static enum swap_result try_swap1(float t, float *cost, float *bb_cost, float *t
     t_pl_blocks_to_be_moved *local_blocks_affected,
     int *local_ts_nets_to_update,
     int block_num, int lb_x, int ub_x, int lb_y, int ub_y,
-    unsigned int *local_current_random);
+    unsigned int *local_current_random,
+    s_bb *local_ts_bb_coord_new, s_bb *local_ts_bb_edge_new, char *local_bb_updated_before,
+    float *local_net_cost, float *local_temp_net_cost);
+
 
 static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *timing_cost,
     float rlim,
@@ -345,11 +348,13 @@ static void get_non_updateable_bb1(int inet, struct s_bb *bb_coord_new);
 static void update_bb(int inet, struct s_bb *bb_coord_new,
     struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew);
  static void update_bb1(int inet, struct s_bb *bb_coord_new,
-    struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew);
+    struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew,
+    char *local_bb_updated_before);
    
 static int find_affected_nets(int *nets_to_update);
 static int find_affected_nets1(int *nets_to_update,
-                              t_pl_blocks_to_be_moved local_blocks_affected);
+                              t_pl_blocks_to_be_moved local_blocks_affected,
+                              float *local_temp_net_cost);
 
 static float get_net_cost(int inet, struct s_bb *bb_ptr);
 
@@ -850,7 +855,17 @@ void try_place(struct s_placer_opts placer_opts,
   unsigned int local_current_random = 0;
   my_srandom1(&local_current_random);
 
-  printf("[%d] random seed %d\n", tid, local_current_random);
+  struct s_bb *local_ts_bb_coord_new = (s_bb *)malloc(num_nets * sizeof(s_bb));
+  struct s_bb *local_ts_bb_edge_new = (s_bb *)malloc(num_nets * sizeof(s_bb));
+  float *local_net_cost = (float *)malloc(num_nets * sizeof(float));
+  float *local_temp_net_cost = (float *)malloc(num_nets * sizeof(float));
+  char *local_bb_updated_before = (char *)malloc(num_nets * sizeof(char));
+
+  if (local_bb_updated_before == NULL) {
+    printf("failed to allocate memory!\n");
+    exit(1);
+  }
+
   int x, y, z;
   int s_idx;
   int num_threads = omp_get_num_threads();
@@ -997,6 +1012,15 @@ void try_place(struct s_placer_opts placer_opts,
         }
 
         #pragma omp barrier
+        for (k = 0; k < num_nets; k++) {
+          local_ts_bb_coord_new[k] = bb_coords[k];
+          local_ts_bb_edge_new[k] = bb_num_on_edges[k];
+          local_net_cost[k] = net_cost[k];
+          local_temp_net_cost[k] = temp_net_cost[k];
+          local_bb_updated_before[k] = bb_updated_before[k];
+        }
+        #pragma omp barrier
+
         //printf("[s_idx=%d] CHECK tid=%d, lb_x=%d, ub_x=%d, lb_y=%d, ub_y=%d\n",
         //  s_idx, tid, lb_x, ub_x, lb_y, ub_y);
         //printf("[tid %d] old_local_bb_cost=%g\n", tid, local_bb_cost);
@@ -1021,7 +1045,10 @@ void try_place(struct s_placer_opts placer_opts,
                 inverse_prev_bb_cost, inverse_prev_timing_cost, &local_delay_cost,
                 &local_blocks_affected,
                 local_ts_nets_to_update[tid],
-                block_num, lb_x, ub_x, lb_y, ub_y, &local_current_random);
+                block_num, lb_x, ub_x, lb_y, ub_y, &local_current_random,
+                local_ts_bb_coord_new, local_ts_bb_edge_new, local_bb_updated_before,
+                local_net_cost, local_temp_net_cost
+              );
 
               if (swap_result == ACCEPTED) {
                 /* Move was accepted.  Update statistics that are useful for the annealing schedule. */
@@ -1460,7 +1487,6 @@ static void update_num_moves(float success_rat, int *num_moves) {
 
   if (*num_moves > 32)
     *num_moves = 32;
-
 }
 
 static int exit_crit(float t, float cost,
@@ -1854,7 +1880,9 @@ static enum swap_result try_swap1(float t,
     t_pl_blocks_to_be_moved *local_blocks_affected,
     int *local_ts_nets_to_update,
     int block_num, int lb_x, int ub_x, int lb_y, int ub_y,
-    unsigned int *local_current_random) {
+    unsigned int *local_current_random,
+    s_bb *local_ts_bb_coord_new, s_bb *local_ts_bb_edge_new, char *local_bb_updated_before,
+    float *local_net_cost, float *local_temp_net_cost) {
 
   /* Picks some block and moves it to another spot.  If this spot is   *
    * occupied, switch the blocks.  Assess the change in cost function  *
@@ -1911,7 +1939,7 @@ static enum swap_result try_swap1(float t,
   if (abort_swap == FALSE) {
 
     // Find all the nets affected by this swap
-    num_nets_affected = find_affected_nets1(local_ts_nets_to_update, *local_blocks_affected);
+    num_nets_affected = find_affected_nets1(local_ts_nets_to_update, *local_blocks_affected, local_temp_net_cost);
 
     /* Go through all the pins in all the blocks moved and update the bounding boxes.  *
      * Do not update the net cost here since it should only be updated once per net,   *
@@ -1929,21 +1957,18 @@ static enum swap_result try_swap1(float t,
         if (clb_net[inet].is_global)
           continue;
       
-        // TAN: WIP
-        if (block[clb_net[inet].node_block[0]].assigned_tid != omp_get_thread_num())
-          continue;
-
         if (clb_net[inet].num_sinks < SMALL_NET) {
           if(bb_updated_before[inet] == NOT_UPDATED_YET)
             /* Brute force bounding box recomputation, once only for speed. */
-            get_non_updateable_bb1(inet, &ts_bb_coord_new[inet]);
+            get_non_updateable_bb1(inet, &local_ts_bb_coord_new[inet]);
         } else {
-          update_bb1(inet, &ts_bb_coord_new[inet],
-              &ts_bb_edge_new[inet], 
+          update_bb1(inet, &local_ts_bb_coord_new[inet],
+              &local_ts_bb_edge_new[inet], 
               local_blocks_affected->moved_blocks[iblk].xold, 
               local_blocks_affected->moved_blocks[iblk].yold + block[bnum].type->pin_height[iblk_pin],
               local_blocks_affected->moved_blocks[iblk].xnew, 
-              local_blocks_affected->moved_blocks[iblk].ynew + block[bnum].type->pin_height[iblk_pin]);
+              local_blocks_affected->moved_blocks[iblk].ynew + block[bnum].type->pin_height[iblk_pin],
+              local_bb_updated_before);
         }
       }
     }
@@ -1953,9 +1978,9 @@ static enum swap_result try_swap1(float t,
     for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
       inet = local_ts_nets_to_update[inet_affected];
 
-      float net_cost_val = get_net_cost(inet, &ts_bb_coord_new[inet]);
-      temp_net_cost[inet] = net_cost_val;
-      bb_delta_c += net_cost_val - net_cost[inet];
+      float net_cost_val = get_net_cost(inet, &local_ts_bb_coord_new[inet]);
+      local_temp_net_cost[inet] = net_cost_val;
+      bb_delta_c += net_cost_val - local_net_cost[inet];
     }
 
     if (place_algorithm == NET_TIMING_DRIVEN_PLACE
@@ -1996,15 +2021,15 @@ static enum swap_result try_swap1(float t,
       for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
         inet = local_ts_nets_to_update[inet_affected];
 
-        bb_coords[inet] = ts_bb_coord_new[inet];
-        if (clb_net[inet].num_sinks >= SMALL_NET)
-          bb_num_on_edges[inet] = ts_bb_edge_new[inet];
+        //bb_coords[inet] = ts_bb_coord_new[inet];
+        //if (clb_net[inet].num_sinks >= SMALL_NET)
+        //  bb_num_on_edges[inet] = ts_bb_edge_new[inet];
       
-        net_cost[inet] = temp_net_cost[inet];
+        local_net_cost[inet] = local_temp_net_cost[inet];
 
         /* negative temp_net_cost value is acting as a flag. */
-        temp_net_cost[inet] = -1;
-        bb_updated_before[inet] = NOT_UPDATED_YET;
+        local_temp_net_cost[inet] = -1;
+        local_bb_updated_before[inet] = NOT_UPDATED_YET;
       }
 
       /* Update clb data structures since we kept the move. */
@@ -2035,8 +2060,8 @@ static enum swap_result try_swap1(float t,
       /* Reset the net cost function flags first. */
       for (inet_affected = 0; inet_affected < num_nets_affected; inet_affected++) {
         inet = local_ts_nets_to_update[inet_affected];
-        temp_net_cost[inet] = -1;
-        bb_updated_before[inet] = NOT_UPDATED_YET;
+        local_temp_net_cost[inet] = -1;
+        local_bb_updated_before[inet] = NOT_UPDATED_YET;
       }
 
       /* Restore the block data structures to their state before the move. */
@@ -2300,7 +2325,8 @@ static enum swap_result try_swap(float t, float *cost, float *bb_cost, float *ti
 }
 
 static int find_affected_nets1(int *nets_to_update,
-                               t_pl_blocks_to_be_moved local_blocks_affected) {
+                               t_pl_blocks_to_be_moved local_blocks_affected,
+                               float *local_temp_net_cost) {
 
   /* Puts a list of all the nets that are changed by the swap into          *
    * nets_to_update.  Returns the number of affected nets.                  */
@@ -2325,17 +2351,13 @@ static int find_affected_nets1(int *nets_to_update,
       if (clb_net[inet].is_global)
         continue;
 
-      // TAN: WIP
-      if (block[clb_net[inet].node_block[0]].assigned_tid != omp_get_thread_num())
-        continue;
-
-      if (temp_net_cost[inet] < 0.) { 
+      if (local_temp_net_cost[inet] < 0.) { 
         /* Net not marked yet. */
         nets_to_update[num_affected_nets] = inet;
         num_affected_nets++;
 
         /* Flag to say we've marked this net. */
-        temp_net_cost[inet] = 1.;
+        local_temp_net_cost[inet] = 1.;
       }
     }
   }
@@ -3783,7 +3805,8 @@ static void get_non_updateable_bb(int inet, struct s_bb *bb_coord_new) {
 }
 
 static void update_bb1(int inet, struct s_bb *bb_coord_new,
-    struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew) {
+    struct s_bb *bb_edge_new, int xold, int yold, int xnew, int ynew,
+    char *local_bb_updated_before) {
 
   /* Updates the bounding box of a net by storing its coordinates in    *
    * the bb_coord_new data structure and the number of blocks on each   *
@@ -3806,15 +3829,15 @@ static void update_bb1(int inet, struct s_bb *bb_coord_new,
   yold = std::max(std::min(yold, ny), 1);
 
   /* Check if the net had been updated before. */
-  if (bb_updated_before[inet] == GOT_FROM_SCRATCH)
+  if (local_bb_updated_before[inet] == GOT_FROM_SCRATCH)
   { /* The net had been updated from scratch, DO NOT update again! */
     return;
   }
-  else if (bb_updated_before[inet] == NOT_UPDATED_YET)
+  else if (local_bb_updated_before[inet] == NOT_UPDATED_YET)
   { /* The net had NOT been updated before, could use the old values */
     curr_bb_coord = &bb_coords[inet];
     curr_bb_edge = &bb_num_on_edges[inet];
-    bb_updated_before[inet] = UPDATED_ONCE;
+    local_bb_updated_before[inet] = UPDATED_ONCE;
   }
   else
   { /* The net had been updated before, must use the new values */
@@ -3831,7 +3854,7 @@ static void update_bb1(int inet, struct s_bb *bb_coord_new,
     if (xold == curr_bb_coord->xmax) { /* Old position at xmax. */
       if (curr_bb_edge->xmax == 1) {
         get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
-        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        local_bb_updated_before[inet] = GOT_FROM_SCRATCH;
         return;
       } else {
         bb_edge_new->xmax = curr_bb_edge->xmax - 1;
@@ -3870,7 +3893,7 @@ static void update_bb1(int inet, struct s_bb *bb_coord_new,
     if (xold == curr_bb_coord->xmin) { /* Old position at xmin. */
       if (curr_bb_edge->xmin == 1) {
         get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
-        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        local_bb_updated_before[inet] = GOT_FROM_SCRATCH;
         return;
       } else {
         bb_edge_new->xmin = curr_bb_edge->xmin - 1;
@@ -3917,7 +3940,7 @@ static void update_bb1(int inet, struct s_bb *bb_coord_new,
     if (yold == curr_bb_coord->ymax) { /* Old position at ymax. */
       if (curr_bb_edge->ymax == 1) {
         get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
-        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        local_bb_updated_before[inet] = GOT_FROM_SCRATCH;
         return;
       } else {
         bb_edge_new->ymax = curr_bb_edge->ymax - 1;
@@ -3955,7 +3978,7 @@ static void update_bb1(int inet, struct s_bb *bb_coord_new,
     if (yold == curr_bb_coord->ymin) { /* Old position at ymin. */
       if (curr_bb_edge->ymin == 1) {
         get_bb_from_scratch1(inet, bb_coord_new, bb_edge_new);
-        bb_updated_before[inet] = GOT_FROM_SCRATCH;
+        local_bb_updated_before[inet] = GOT_FROM_SCRATCH;
         return;
       } else {
         bb_edge_new->ymin = curr_bb_edge->ymin - 1;
@@ -3993,8 +4016,8 @@ static void update_bb1(int inet, struct s_bb *bb_coord_new,
     bb_edge_new->ymax = curr_bb_edge->ymax;
   }
 
-  if (bb_updated_before[inet] == NOT_UPDATED_YET)
-    bb_updated_before[inet] = UPDATED_ONCE;
+  if (local_bb_updated_before[inet] == NOT_UPDATED_YET)
+    local_bb_updated_before[inet] = UPDATED_ONCE;
 }
 
 static void update_bb(int inet, struct s_bb *bb_coord_new,
